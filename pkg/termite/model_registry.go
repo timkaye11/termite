@@ -27,6 +27,7 @@ import (
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
+	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
 	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
@@ -473,6 +474,145 @@ func (r *EmbedderRegistry) Close() error {
 		}
 		if err != nil {
 			r.logger.Warn("Error closing embedder model",
+				zap.String("name", name),
+				zap.Error(err))
+		}
+	}
+	return nil
+}
+
+// NERRegistry manages multiple NER (Named Entity Recognition) models loaded from a directory
+type NERRegistry struct {
+	models map[string]ner.Model // model name -> NER model instance
+	mu     sync.RWMutex
+	logger *zap.Logger
+}
+
+// NewNERRegistry creates a registry and discovers NER models in the given directory
+// If sharedSession is provided, all models will share the same Hugot session (required for ONNX Runtime)
+func NewNERRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap.Logger) (*NERRegistry, error) {
+	registry := &NERRegistry{
+		models: make(map[string]ner.Model),
+		logger: logger,
+	}
+
+	if modelsDir == "" {
+		logger.Info("No NER models directory configured")
+		return registry, nil
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(modelsDir); os.IsNotExist(err) {
+		logger.Warn("NER models directory does not exist",
+			zap.String("dir", modelsDir))
+		return registry, nil
+	}
+
+	// Scan directory for model subdirectories
+	entries, err := os.ReadDir(modelsDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading NER models directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		modelName := entry.Name()
+		modelPath := filepath.Join(modelsDir, modelName)
+
+		// Discover all available model variants
+		variants := discoverModelVariants(modelPath)
+
+		// Skip if no model files exist
+		if len(variants) == 0 {
+			logger.Debug("Skipping directory without model files",
+				zap.String("dir", modelName))
+			continue
+		}
+
+		// Log discovered variants
+		variantIDs := make([]string, 0, len(variants))
+		for v := range variants {
+			if v == "" {
+				variantIDs = append(variantIDs, "default")
+			} else {
+				variantIDs = append(variantIDs, v)
+			}
+		}
+		logger.Info("Discovered NER model directory",
+			zap.String("name", modelName),
+			zap.String("path", modelPath),
+			zap.Strings("variants", variantIDs))
+
+		// Pool size for concurrent pipeline access
+		// Cap at 4 to avoid excessive memory usage (each pipeline loads full model)
+		poolSize := min(runtime.NumCPU(), 4)
+
+		// Load each variant
+		for variantID, onnxFilename := range variants {
+			// Determine registry name
+			registryName := modelName
+			if variantID != "" {
+				registryName = modelName + "-" + variantID
+			}
+
+			// Pass model path, ONNX filename, and shared session to pooled NER model
+			model, err := ner.NewPooledHugotNERWithSession(modelPath, onnxFilename, poolSize, sharedSession, logger.Named(registryName))
+			if err != nil {
+				logger.Warn("Failed to load NER model variant",
+					zap.String("name", registryName),
+					zap.String("onnxFile", onnxFilename),
+					zap.Error(err))
+			} else {
+				registry.models[registryName] = model
+				logger.Info("Successfully loaded NER model",
+					zap.String("name", registryName),
+					zap.String("onnxFile", onnxFilename),
+					zap.Int("poolSize", poolSize))
+			}
+		}
+	}
+
+	logger.Info("NER registry initialized",
+		zap.Int("models_loaded", len(registry.models)))
+
+	return registry, nil
+}
+
+// Get returns a NER model by name
+func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	model, ok := r.models[modelName]
+	if !ok {
+		return nil, fmt.Errorf("NER model not found: %s", modelName)
+	}
+	return model, nil
+}
+
+// List returns all available NER model names
+func (r *NERRegistry) List() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.models))
+	for name := range r.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Close closes all loaded NER models
+func (r *NERRegistry) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, model := range r.models {
+		if err := model.Close(); err != nil {
+			r.logger.Warn("Error closing NER model",
 				zap.String("name", name),
 				zap.Error(err))
 		}

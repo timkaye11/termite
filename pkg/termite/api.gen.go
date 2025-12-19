@@ -257,8 +257,47 @@ type ModelsResponse struct {
 	// Embedders Available embedding models from models_dir/embedders/
 	Embedders []string `json:"embedders"`
 
+	// Ner Available NER models from models_dir/ner/
+	Ner []string `json:"ner"`
+
 	// Rerankers Available reranking models
 	Rerankers []string `json:"rerankers"`
+}
+
+// NEREntity A named entity extracted from text
+type NEREntity struct {
+	// End Character offset where entity ends (exclusive)
+	End int `json:"end"`
+
+	// Label Entity type (PER, ORG, LOC, MISC)
+	Label string `json:"label"`
+
+	// Score Confidence score (0.0 to 1.0)
+	Score float32 `json:"score"`
+
+	// Start Character offset where entity begins
+	Start int `json:"start"`
+
+	// Text The entity text
+	Text string `json:"text"`
+}
+
+// NERRequest defines model for NERRequest.
+type NERRequest struct {
+	// Model Name of NER model from models_dir/ner/
+	Model string `json:"model"`
+
+	// Texts Texts to extract entities from
+	Texts []string `json:"texts"`
+}
+
+// NERResponse defines model for NERResponse.
+type NERResponse struct {
+	// Entities Array of entity arrays (one per input text)
+	Entities [][]NEREntity `json:"entities"`
+
+	// Model Name of model used for NER
+	Model string `json:"model"`
 }
 
 // RerankRequest defines model for RerankRequest.
@@ -316,6 +355,9 @@ type GenerateEmbeddingsJSONRequestBody = EmbedRequest
 
 // RerankPromptsJSONRequestBody defines body for RerankPrompts for application/json ContentType.
 type RerankPromptsJSONRequestBody = RerankRequest
+
+// RecognizeEntitiesJSONRequestBody defines body for RecognizeEntities for application/json ContentType.
+type RecognizeEntitiesJSONRequestBody = NERRequest
 
 // AsTextContentPart returns the union data inside the ContentPart as a TextContentPart
 func (t ContentPart) AsTextContentPart() (TextContentPart, error) {
@@ -478,6 +520,9 @@ type ServerInterface interface {
 	// List available models
 	// (GET /models)
 	ListModels(w http.ResponseWriter, r *http.Request)
+	// Extract named entities
+	// (POST /ner)
+	RecognizeEntities(w http.ResponseWriter, r *http.Request)
 	// Rerank prompts by relevance
 	// (POST /rerank)
 	RerankPrompts(w http.ResponseWriter, r *http.Request)
@@ -528,6 +573,20 @@ func (siw *ServerInterfaceWrapper) ListModels(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListModels(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RecognizeEntities operation middleware
+func (siw *ServerInterfaceWrapper) RecognizeEntities(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RecognizeEntities(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -688,6 +747,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/chunk", wrapper.ChunkText)
 	m.HandleFunc("POST "+options.BaseURL+"/embed", wrapper.GenerateEmbeddings)
 	m.HandleFunc("GET "+options.BaseURL+"/models", wrapper.ListModels)
+	m.HandleFunc("POST "+options.BaseURL+"/ner", wrapper.RecognizeEntities)
 	m.HandleFunc("POST "+options.BaseURL+"/rerank", wrapper.RerankPrompts)
 	m.HandleFunc("GET "+options.BaseURL+"/version", wrapper.GetVersion)
 

@@ -53,15 +53,17 @@ type TermiteNode struct {
 
 	cachedChunker         *CachedChunker
 	rerankerRegistry      *RerankerRegistry
+	nerRegistry           *NERRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
 	// Request queue for backpressure control
 	requestQueue *RequestQueue
 
-	// Caches for embeddings and reranking
+	// Caches for embeddings, reranking, and NER
 	embeddingCache *EmbeddingCache
 	rerankingCache *RerankingCache
+	nerCache       *NERCache
 }
 
 // corsMiddleware adds permissive CORS headers for the Termite API
@@ -231,6 +233,21 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		defer func() { _ = rerankerRegistry.Close() }()
 	}
 
+	// Initialize NER registry with optional model directory support
+	// If models_dir is set in config, Termite will discover and load NER models
+	// If not set, NER endpoint will not be available
+	var nerModelsDir string
+	if config.ModelsDir != "" {
+		nerModelsDir = filepath.Join(config.ModelsDir, "ner")
+	}
+	nerRegistry, err := NewNERRegistry(nerModelsDir, sharedSession, zl.Named("ner"))
+	if err != nil {
+		zl.Fatal("Failed to initialize NER registry", zap.Error(err))
+	}
+	if nerRegistry != nil {
+		defer func() { _ = nerRegistry.Close() }()
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -270,12 +287,15 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		RequestTimeout:        requestTimeout,
 	}, zl.Named("queue"))
 
-	// Initialize caches for embeddings and reranking
+	// Initialize caches for embeddings, reranking, and NER
 	embeddingCache := NewEmbeddingCache(zl.Named("embedding-cache"))
 	defer embeddingCache.Close()
 
 	rerankingCache := NewRerankingCache(zl.Named("reranking-cache"))
 	defer rerankingCache.Close()
+
+	nerCache := NewNERCache(zl.Named("ner-cache"))
+	defer nerCache.Close()
 
 	// Build S3 credentials from config (optional)
 	var s3Creds *s3.Credentials
@@ -291,11 +311,13 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		lazyEmbedderRegistry:  lazyEmbedderRegistry,
 		cachedChunker:         cachedChunker,
 		rerankerRegistry:      rerankerRegistry,
+		nerRegistry:           nerRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
 		embeddingCache:        embeddingCache,
 		rerankingCache:        rerankingCache,
+		nerCache:              nerCache,
 
 		client: client,
 	}

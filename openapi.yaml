@@ -285,11 +285,99 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /ner:
+    post:
+      summary: Extract named entities
+      description: |
+        Extracts named entities from input texts using ONNX-based NER models.
+
+        ## Supported Models
+
+        Models are auto-discovered from `models_dir/ner/` at startup.
+        Currently supported model architectures:
+        - **BERT-based NER** (e.g., bert-base-NER, distilbert-NER): Standard token classification
+
+        ## Entity Types
+
+        Standard CoNLL entity types are returned:
+        - **PER**: Person names
+        - **ORG**: Organizations
+        - **LOC**: Locations
+        - **MISC**: Miscellaneous entities
+
+        ## Example
+
+        ```json
+        {
+          "model": "bert-base-ner",
+          "texts": [
+            "John Smith works at Google in Mountain View.",
+            "Apple Inc. is headquartered in Cupertino, California."
+          ]
+        }
+        ```
+
+        Response:
+        ```json
+        {
+          "model": "bert-base-ner",
+          "entities": [
+            [
+              {"text": "John Smith", "label": "PER", "start": 0, "end": 10, "score": 0.99},
+              {"text": "Google", "label": "ORG", "start": 20, "end": 26, "score": 0.98},
+              {"text": "Mountain View", "label": "LOC", "start": 30, "end": 43, "score": 0.97}
+            ],
+            [
+              {"text": "Apple Inc.", "label": "ORG", "start": 0, "end": 10, "score": 0.99},
+              {"text": "Cupertino", "label": "LOC", "start": 31, "end": 40, "score": 0.98},
+              {"text": "California", "label": "LOC", "start": 42, "end": 52, "score": 0.97}
+            ]
+          ]
+        }
+        ```
+      operationId: recognizeEntities
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NERRequest'
+      responses:
+        '200':
+          description: Entities extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NERResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: NER service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /models:
     get:
       summary: List available models
       description: |
-        Returns lists of available embedding, chunking, and reranking models.
+        Returns lists of available embedding, chunking, reranking, and NER models.
 
         ## Embedders
 
@@ -305,6 +393,11 @@ paths:
 
         - ONNX models from `models_dir/rerankers/`
         - Empty if no models configured
+
+        ## NER
+
+        - ONNX models from `models_dir/ner/`
+        - Includes BERT-based NER models (bert-base-ner, distilbert-ner)
 
         Models are discovered at service startup and cached.
       operationId: listModels
@@ -619,12 +712,79 @@ components:
             type: number
             format: float
           description: Relevance scores (one per prompt, same order as input)
+    NERRequest:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: Name of NER model from models_dir/ner/
+          example: bert-base-ner
+        texts:
+          type: array
+          items:
+            type: string
+          description: Texts to extract entities from
+          example:
+            - John Smith works at Google in Mountain View.
+            - Apple Inc. is headquartered in Cupertino.
+    NEREntity:
+      type: object
+      description: A named entity extracted from text
+      required:
+        - text
+        - label
+        - start
+        - end
+        - score
+      properties:
+        text:
+          type: string
+          description: The entity text
+          example: John Smith
+        label:
+          type: string
+          description: Entity type (PER, ORG, LOC, MISC)
+          example: PER
+        start:
+          type: integer
+          description: Character offset where entity begins
+          example: 0
+        end:
+          type: integer
+          description: Character offset where entity ends (exclusive)
+          example: 10
+        score:
+          type: number
+          format: float
+          description: Confidence score (0.0 to 1.0)
+          example: 0.99
+    NERResponse:
+      type: object
+      required:
+        - model
+        - entities
+      properties:
+        model:
+          type: string
+          description: Name of model used for NER
+          example: bert-base-ner
+        entities:
+          type: array
+          description: Array of entity arrays (one per input text)
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/NEREntity'
     ModelsResponse:
       type: object
       required:
         - chunkers
         - rerankers
         - embedders
+        - ner
       properties:
         chunkers:
           type: array
@@ -649,6 +809,14 @@ components:
           example:
             - bge-small-en-v1.5
             - bge-small-en-v1.5-i8-qt
+        ner:
+          type: array
+          items:
+            type: string
+          description: Available NER models from models_dir/ner/
+          example:
+            - bert-base-ner
+            - distilbert-ner
     Config:
       type: object
       required:
