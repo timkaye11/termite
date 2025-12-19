@@ -11,7 +11,8 @@ info:
     - **Embedding Generation**: Text and multimodal (CLIP) embedding models
     - **Text Chunking**: Semantic chunking with ONNX models or fixed-size fallback
     - **Reranking**: Relevance re-scoring for search results
-    - **Future**: NER, classification, and generative model support planned
+    - **Named Entity Recognition (NER)**: Extract persons, organizations, locations from text
+    - **Future**: Classification and generative model support planned
 
     Download the latest release at https://antfly.io/docs/downloads
 
@@ -326,6 +327,72 @@ components:
             format: float
           description: Relevance scores (one per prompt, same order as input)
 
+    # NER Types
+    NEREntity:
+      type: object
+      required:
+        - text
+        - label
+        - start
+        - end
+        - score
+      properties:
+        text:
+          type: string
+          description: The entity text
+          example: "John Smith"
+        label:
+          type: string
+          description: Entity type (PER, ORG, LOC, MISC)
+          example: "PER"
+        start:
+          type: integer
+          description: Character offset where entity begins
+          example: 0
+        end:
+          type: integer
+          description: Character offset where entity ends (exclusive)
+          example: 10
+        score:
+          type: number
+          format: float
+          description: Confidence score (0.0 to 1.0)
+          example: 0.99
+
+    NERRequest:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: Name of NER model from models_dir/ner/
+          example: "bert-base-ner"
+        texts:
+          type: array
+          items:
+            type: string
+          description: Texts to extract entities from
+          example: ["John Smith works at Google.", "Apple Inc. is in Cupertino."]
+
+    NERResponse:
+      type: object
+      required:
+        - model
+        - entities
+      properties:
+        model:
+          type: string
+          description: Name of model used for NER
+        entities:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: "#/components/schemas/NEREntity"
+          description: Array of entity arrays (one per input text)
+
     # Models Types
     ModelsResponse:
       type: object
@@ -333,6 +400,7 @@ components:
         - chunkers
         - rerankers
         - embedders
+        - ner
       properties:
         chunkers:
           type: array
@@ -352,6 +420,12 @@ components:
             type: string
           description: Available embedding models from models_dir/embedders/
           example: ["bge-small-en-v1.5", "bge-small-en-v1.5-i8-qt"]
+        ner:
+          type: array
+          items:
+            type: string
+          description: Available NER models from models_dir/ner/
+          example: ["bert-base-ner", "distilbert-ner"]
 
     Config:
       type: object
@@ -721,11 +795,78 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /ner:
+    post:
+      summary: Extract named entities
+      description: |
+        Extracts named entities (persons, organizations, locations, etc.) from text using ONNX NER models.
+
+        ## Entity Types
+
+        Standard CoNLL entity types:
+        - **PER**: Person names (e.g., "John Smith")
+        - **ORG**: Organizations (e.g., "Google", "Apple Inc.")
+        - **LOC**: Locations (e.g., "New York", "France")
+        - **MISC**: Miscellaneous entities
+
+        ## Models
+
+        - Models are auto-discovered from `models_dir/ner/`
+        - Supports quantized variants (model_i8.onnx)
+        - Compatible with HuggingFace BERT-based NER models
+
+        ## Example
+
+        ```json
+        {
+          "model": "bert-base-ner",
+          "texts": ["John Smith works at Google.", "Apple Inc. is in Cupertino."]
+        }
+        ```
+      operationId: recognizeEntities
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NERRequest"
+      responses:
+        "200":
+          description: Entities extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NERResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: NER service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /models:
     get:
       summary: List available models
       description: |
-        Returns lists of available embedding, chunking, and reranking models.
+        Returns lists of available embedding, chunking, reranking, and NER models.
 
         ## Embedders
 
@@ -740,6 +881,11 @@ paths:
         ## Rerankers
 
         - ONNX models from `models_dir/rerankers/`
+        - Empty if no models configured
+
+        ## NER
+
+        - ONNX models from `models_dir/ner/`
         - Empty if no models configured
 
         Models are discovered at service startup and cached.
