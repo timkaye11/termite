@@ -32,6 +32,7 @@ Models are downloaded to the appropriate directory based on their type:
   - Embedders: models/embedders/<model-name>/
   - Chunkers:  models/chunkers/<model-name>/
   - Rerankers: models/rerankers/<model-name>/
+  - NER:       models/ner/<model-name>/
 
 Variants:
   f32     - FP32 baseline (default, highest accuracy)
@@ -53,11 +54,17 @@ Examples:
   # Pull multiple models with same variant
   termite pull --variants i8 bge-small-en-v1.5 mxbai-rerank-base-v1
 
+  # Pull NER model
+  termite pull bert-base-ner
+
   # Pull to a custom directory
   termite pull --models-dir /opt/antfly/models bge-small-en-v1.5
 
   # Pull directly from HuggingFace
-  termite pull hf:onnx-community/embeddinggemma-300m-ONNX --type embedder`,
+  termite pull hf:onnx-community/embeddinggemma-300m-ONNX --type embedder
+
+  # Pull NER model from HuggingFace
+  termite pull hf:dslim/bert-base-NER --type ner`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runPull,
 }
