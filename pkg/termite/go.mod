@@ -6,7 +6,7 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512171943
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251216073604-08dec061401c
+replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251220003714-ef99c764668a
 
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20251218041248-7d57e4c8b270
@@ -36,7 +36,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
-	github.com/charmbracelet/colorprofile v0.3.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/daulet/tokenizers v1.24.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -55,7 +54,6 @@ require (
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-xla v0.1.4 // indirect
 	github.com/gomlx/gomlx v0.26.0 // indirect
-	github.com/gomlx/gopjrt v0.10.0 // indirect
 	github.com/gomlx/onnx-gomlx v0.3.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -63,6 +61,7 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
+	github.com/knights-analytics/ortgenai v0.0.1 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect

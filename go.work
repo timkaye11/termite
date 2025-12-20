@@ -1,7 +1,6 @@
 go 1.25.5
 
 use (
-	../hugot
 	./pkg/client
 	./pkg/operator
 	./pkg/proxy
