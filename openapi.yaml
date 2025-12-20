@@ -11,7 +11,8 @@ info:
     - **Embedding Generation**: Text and multimodal (CLIP) embedding models
     - **Text Chunking**: Semantic chunking with ONNX models or fixed-size fallback
     - **Reranking**: Relevance re-scoring for search results
-    - **Future**: NER, classification, and generative model support planned
+    - **Named Entity Recognition (NER)**: Extract persons, organizations, locations from text
+    - **Future**: Classification and generative model support planned
 
     Download the latest release at https://antfly.io/docs/downloads
 
@@ -289,50 +290,28 @@ paths:
     post:
       summary: Extract named entities
       description: |
-        Extracts named entities from input texts using ONNX-based NER models.
-
-        ## Supported Models
-
-        Models are auto-discovered from `models_dir/ner/` at startup.
-        Currently supported model architectures:
-        - **BERT-based NER** (e.g., bert-base-NER, distilbert-NER): Standard token classification
+        Extracts named entities (persons, organizations, locations, etc.) from text using ONNX NER models.
 
         ## Entity Types
 
-        Standard CoNLL entity types are returned:
-        - **PER**: Person names
-        - **ORG**: Organizations
-        - **LOC**: Locations
+        Standard CoNLL entity types:
+        - **PER**: Person names (e.g., "John Smith")
+        - **ORG**: Organizations (e.g., "Google", "Apple Inc.")
+        - **LOC**: Locations (e.g., "New York", "France")
         - **MISC**: Miscellaneous entities
+
+        ## Models
+
+        - Models are auto-discovered from `models_dir/ner/`
+        - Supports quantized variants (model_i8.onnx)
+        - Compatible with HuggingFace BERT-based NER models
 
         ## Example
 
         ```json
         {
           "model": "bert-base-ner",
-          "texts": [
-            "John Smith works at Google in Mountain View.",
-            "Apple Inc. is headquartered in Cupertino, California."
-          ]
-        }
-        ```
-
-        Response:
-        ```json
-        {
-          "model": "bert-base-ner",
-          "entities": [
-            [
-              {"text": "John Smith", "label": "PER", "start": 0, "end": 10, "score": 0.99},
-              {"text": "Google", "label": "ORG", "start": 20, "end": 26, "score": 0.98},
-              {"text": "Mountain View", "label": "LOC", "start": 30, "end": 43, "score": 0.97}
-            ],
-            [
-              {"text": "Apple Inc.", "label": "ORG", "start": 0, "end": 10, "score": 0.99},
-              {"text": "Cupertino", "label": "LOC", "start": 31, "end": 40, "score": 0.98},
-              {"text": "California", "label": "LOC", "start": 42, "end": 52, "score": 0.97}
-            ]
-          ]
+          "texts": ["John Smith works at Google.", "Apple Inc. is in Cupertino."]
         }
         ```
       operationId: recognizeEntities
@@ -397,7 +376,7 @@ paths:
         ## NER
 
         - ONNX models from `models_dir/ner/`
-        - Includes BERT-based NER models (bert-base-ner, distilbert-ner)
+        - Empty if no models configured
 
         Models are discovered at service startup and cached.
       operationId: listModels
@@ -712,27 +691,8 @@ components:
             type: number
             format: float
           description: Relevance scores (one per prompt, same order as input)
-    NERRequest:
-      type: object
-      required:
-        - model
-        - texts
-      properties:
-        model:
-          type: string
-          description: Name of NER model from models_dir/ner/
-          example: bert-base-ner
-        texts:
-          type: array
-          items:
-            type: string
-          description: Texts to extract entities from
-          example:
-            - John Smith works at Google in Mountain View.
-            - Apple Inc. is headquartered in Cupertino.
     NEREntity:
       type: object
-      description: A named entity extracted from text
       required:
         - text
         - label
@@ -761,6 +721,24 @@ components:
           format: float
           description: Confidence score (0.0 to 1.0)
           example: 0.99
+    NERRequest:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: Name of NER model from models_dir/ner/
+          example: bert-base-ner
+        texts:
+          type: array
+          items:
+            type: string
+          description: Texts to extract entities from
+          example:
+            - John Smith works at Google.
+            - Apple Inc. is in Cupertino.
     NERResponse:
       type: object
       required:
@@ -770,14 +748,13 @@ components:
         model:
           type: string
           description: Name of model used for NER
-          example: bert-base-ner
         entities:
           type: array
-          description: Array of entity arrays (one per input text)
           items:
             type: array
             items:
               $ref: '#/components/schemas/NEREntity'
+          description: Array of entity arrays (one per input text)
     ModelsResponse:
       type: object
       required:

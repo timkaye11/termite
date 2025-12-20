@@ -37,16 +37,22 @@ import (
 // The default FP32 model (model.onnx) is returned with an empty string key.
 func discoverModelVariants(modelPath string) map[string]string {
 	variants := make(map[string]string)
+	usedFilenames := make(map[string]bool)
 
 	// Check for standard FP32 model
 	if _, err := os.Stat(filepath.Join(modelPath, "model.onnx")); err == nil {
 		variants[""] = "model.onnx" // Empty key = default/FP32
+		usedFilenames["model.onnx"] = true
 	}
 
-	// Check for all known variant files
+	// Check for all known variant files, but skip if filename already used
 	for variantID, filename := range modelregistry.VariantFilenames {
+		if usedFilenames[filename] {
+			continue // Skip duplicates (e.g., f32 uses same model.onnx as default)
+		}
 		if _, err := os.Stat(filepath.Join(modelPath, filename)); err == nil {
 			variants[variantID] = filename
+			usedFilenames[filename] = true
 		}
 	}
 
