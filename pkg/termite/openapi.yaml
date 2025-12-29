@@ -427,11 +427,6 @@ components:
               type: string
           description: Generated texts (array of arrays, one per input, multiple per beam)
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> Stashed changes
     # Knowledge Graph Types
     KGNode:
       type: object
@@ -590,16 +585,11 @@ components:
       properties:
         model:
           type: string
-<<<<<<< Updated upstream
           description: |
             Name of model to use for entity/relation extraction. Supports:
             - REBEL models from models_dir/rel/ (e.g., "rebel-large", "mrebel-large")
-            - GLiNER models from models_dir/ner/ (e.g., "gliner-multitask")
+            - GLiNER models from models_dir/recognizers/ (e.g., "gliner-multitask")
           example: "rebel-large"
-=======
-          description: Name of GLiNER model from models_dir/ner/ to use for entity/relation extraction
-          example: "gliner-multitask"
->>>>>>> Stashed changes
         texts:
           type: array
           items:
@@ -681,10 +671,6 @@ components:
             $ref: "#/components/schemas/KGEdge"
           description: Relationship edges in the knowledge graph
 
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
     # Models Types
     ModelsResponse:
       type: object
@@ -692,14 +678,8 @@ components:
         - chunkers
         - rerankers
         - embedders
-<<<<<<< Updated upstream
         - recognizers
         - questionators
-=======
-        - ner
-        - generators
-        - rel
->>>>>>> Stashed changes
       properties:
         chunkers:
           type: array
@@ -1272,16 +1252,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> Stashed changes
   /knowledgegraph:
     post:
       summary: Build a knowledge graph from text
       description: |
-<<<<<<< Updated upstream
         Extracts entities and relationships from text and builds a knowledge graph with entity resolution.
 
         ## How It Works
@@ -1305,23 +1279,7 @@ paths:
         ### GLiNER Models
         - Zero-shot entity and relation extraction
         - Requires a GLiNER model that supports relation extraction (multitask models)
-        - Models are auto-discovered from `models_dir/ner/`
-=======
-        Extracts entities and relationships from text using a GLiNER model and builds
-        a knowledge graph with entity resolution.
-
-        ## How It Works
-
-        1. **Entity Extraction**: Uses GLiNER zero-shot NER to extract entities
-        2. **Relation Extraction**: Uses GLiNER relation extraction to find relationships
-        3. **Entity Resolution**: Merges similar entities using Jaro-Winkler similarity
-        4. **Graph Building**: Creates nodes (entities) and edges (relationships)
-
-        ## Models
-
-        Requires a GLiNER model that supports relation extraction (multitask models).
-        Models are auto-discovered from `models_dir/ner/`.
->>>>>>> Stashed changes
+        - Models are auto-discovered from `models_dir/recognizers/`
 
         ## Entity Resolution
 
@@ -1386,10 +1344,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
   /models:
     get:
       summary: List available models

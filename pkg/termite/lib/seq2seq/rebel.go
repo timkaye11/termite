@@ -138,12 +138,11 @@ func NewHugotREBELWithSession(modelPath string, sharedSession *khugot.Session, l
 
 	// Create Seq2Seq pipeline for REBEL
 	// IMPORTANT: REBEL uses special tokens (<triplet>, <subj>, <obj>) to structure output
-	// We must preserve these tokens for parsing
+	// These tokens are part of the model vocabulary, not special tokens that get stripped
 	pipelineName := fmt.Sprintf("rebel:%s", filepath.Base(modelPath))
 	pipelineOptions := []khugot.Seq2SeqOption{
 		pipelines.WithSeq2SeqMaxTokens(config.MaxLength),
 		pipelines.WithNumReturnSequences(1),
-		pipelines.WithSkipSpecialTokens(false), // Preserve <triplet>, <subj>, <obj> tokens
 	}
 
 	pipelineConfig := khugot.Seq2SeqConfig{
@@ -216,12 +215,11 @@ func NewHugotREBELWithSessionManager(modelPath string, sessionManager *hugot.Ses
 
 	// Create Seq2Seq pipeline for REBEL
 	// IMPORTANT: REBEL uses special tokens (<triplet>, <subj>, <obj>) to structure output
-	// We must preserve these tokens for parsing
+	// These tokens are part of the model vocabulary, not special tokens that get stripped
 	pipelineName := fmt.Sprintf("rebel:%s", filepath.Base(modelPath))
 	pipelineOptions := []khugot.Seq2SeqOption{
 		pipelines.WithSeq2SeqMaxTokens(config.MaxLength),
 		pipelines.WithNumReturnSequences(1),
-		pipelines.WithSkipSpecialTokens(false), // Preserve <triplet>, <subj>, <obj> tokens
 	}
 
 	pipelineConfig := khugot.Seq2SeqConfig{
