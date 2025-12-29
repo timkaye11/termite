@@ -82,6 +82,11 @@ func (t *TermiteAPI) GenerateQuestions(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiGenerate(w, r)
 }
 
+// BuildKnowledgeGraph implements ServerInterface
+func (t *TermiteAPI) BuildKnowledgeGraph(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiKnowledgeGraph(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -771,11 +776,17 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 func (ln *TermiteNode) handleApiKnowledgeGraph(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
+<<<<<<< Updated upstream
 	// Check if any KG-capable models are available (NER or REBEL)
 	hasNER := ln.nerRegistry != nil && len(ln.nerRegistry.List()) > 0
 	hasREBEL := ln.relRegistry != nil && len(ln.relRegistry.List()) > 0
 	if !hasNER && !hasREBEL {
 		http.Error(w, "knowledge graph not available: no NER or relation extraction models configured", http.StatusServiceUnavailable)
+=======
+	// Check if NER is available
+	if ln.nerRegistry == nil || len(ln.nerRegistry.List()) == 0 {
+		http.Error(w, "NER not available: no models configured", http.StatusServiceUnavailable)
+>>>>>>> Stashed changes
 		return
 	}
 
@@ -816,6 +827,7 @@ func (ln *TermiteNode) handleApiKnowledgeGraph(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+<<<<<<< Updated upstream
 	var entities [][]ner.Entity
 	var relations [][]ner.Relation
 
@@ -887,6 +899,42 @@ func (ln *TermiteNode) handleApiKnowledgeGraph(w http.ResponseWriter, r *http.Re
 	}
 
 buildKG:
+=======
+	// Get GLiNER model from registry
+	glinerModel, err := ln.nerRegistry.GetGLiNER(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("GLiNER model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Cast to RelationExtractionModel to access relation extraction methods
+	relModel, ok := glinerModel.(ner.RelationExtractionModel)
+	if !ok {
+		http.Error(w, fmt.Sprintf("model %s does not support relation extraction", req.Model), http.StatusBadRequest)
+		return
+	}
+
+	// Get entity and relation labels (use defaults if not provided)
+	entityLabels := req.EntityLabels
+	if len(entityLabels) == 0 {
+		entityLabels = glinerModel.Labels()
+	}
+
+	relationLabels := req.RelationLabels
+	if len(relationLabels) == 0 {
+		relationLabels = relModel.RelationLabels()
+	}
+
+	// Extract entities and relations
+	entities, relations, err := relModel.RecognizeWithRelations(r.Context(), req.Texts, entityLabels, relationLabels)
+	if err != nil {
+		ln.logger.Error("GLiNER recognition with relations failed",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("entity/relation extraction failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+>>>>>>> Stashed changes
 
 	// Build KG config
 	kgConfig := ner.DefaultKGBuilderConfig()
@@ -1038,6 +1086,7 @@ buildKG:
 		return
 	}
 }
+<<<<<<< Updated upstream
 
 // extractWithREBEL uses a REBEL model to extract entities and relations from text.
 // REBEL outputs triplets (subject, object, relation) which we convert to ner.Entity and ner.Relation format.
@@ -1116,3 +1165,5 @@ func findSpan(text, substring string) (int, int) {
 	// Not found - return placeholder span
 	return 0, len(substring)
 }
+=======
+>>>>>>> Stashed changes
