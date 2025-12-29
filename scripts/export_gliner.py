@@ -1,19 +1,39 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "gliner",
+#     "onnx",
+#     "onnxruntime",
+#     "onnxconverter-common",
+#     "transformers",
+# ]
+# ///
 """
-Export GLiNER models to ONNX format for zero-shot Named Entity Recognition.
+Export GLiNER models to ONNX format for zero-shot Named Entity Recognition
+and Relation Extraction.
 
 GLiNER models can extract any entity type without retraining - just specify
-the entity labels at inference time.
+the entity labels at inference time. Relation extraction models can also
+extract relationships between entities.
 
 Usage:
+    # Entity extraction only (NER)
     python scripts/export_gliner.py --model urchade/gliner_small-v2.1 --output ./models/ner/gliner_small
-    python scripts/export_gliner.py --model urchade/gliner_medium-v2.1 --output ./models/ner/gliner_medium --quantize int8
-    python scripts/export_gliner.py --model urchade/gliner_medium-v2.1 --output ./models/ner/gliner_medium --quantize fp16
+
+    # Relation extraction (NER + Relations) - for Knowledge Graphs
+    python scripts/export_gliner.py --model knowledgator/gliner-multitask-large-v0.5 --output ./models/ner/gliner-multitask
+    python scripts/export_gliner.py --model knowledgator/gliner-relex-large-v0.5 --output ./models/ner/gliner-relex
 
 Available Models:
+    Entity Extraction (NER only):
     - urchade/gliner_small-v2.1  (~166M params, fast inference)
     - urchade/gliner_medium-v2.1 (~209M params, balanced)
     - urchade/gliner_large-v2.1  (~304M params, most accurate)
+
+    Relation Extraction (NER + Relations):
+    - knowledgator/gliner-multitask-large-v0.5  (NER + relations, best for KG)
+    - knowledgator/gliner-relex-large-v0.5      (dedicated relation extraction)
 
 After export, use with termite:
     termite run --models-dir ./models
@@ -125,6 +145,20 @@ def export_gliner_model(model_id: str, output_dir: str, quantize: str | None = N
         if temp_onnx_dir.exists():
             shutil.rmtree(temp_onnx_dir)
 
+    # Detect model type based on model ID
+    model_name_lower = model_id.lower()
+    is_multitask = "multitask" in model_name_lower
+    is_relex = "relex" in model_name_lower
+    supports_relations = is_multitask or is_relex
+
+    # Determine model type for config
+    if is_multitask:
+        model_type = "multitask"
+    elif is_relex:
+        model_type = "relex"
+    else:
+        model_type = "uniencoder"
+
     # Create GLiNER config file for Termite
     gliner_config = {
         "max_width": 12,
@@ -133,7 +167,18 @@ def export_gliner_model(model_id: str, output_dir: str, quantize: str | None = N
         "flat_ner": True,
         "multi_label": False,
         "model_id": model_id,
+        "model_type": model_type,
     }
+
+    # Add relation extraction config for compatible models
+    if supports_relations:
+        gliner_config["supports_relations"] = True
+        gliner_config["relation_labels"] = [
+            "works_for", "located_in", "founded", "founded_by",
+            "headquartered_in", "acquired_by", "subsidiary_of"
+        ]
+        gliner_config["relation_threshold"] = 0.5
+        logger.info(f"  Model supports relation extraction: {model_type}")
 
     config_path = output_path / "gliner_config.json"
     with open(config_path, "w") as f:
@@ -184,19 +229,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Export small GLiNER model (no quantization)
+  # Export small GLiNER model (no quantization) - NER only
   python scripts/export_gliner.py --model urchade/gliner_small-v2.1 --output ./models/ner/gliner_small
 
   # Export with INT8 quantization
   python scripts/export_gliner.py --model urchade/gliner_medium-v2.1 --output ./models/ner/gliner_medium --quantize int8
 
-  # Export with FP16 quantization
-  python scripts/export_gliner.py --model urchade/gliner_medium-v2.1 --output ./models/ner/gliner_medium_fp16 --quantize fp16
+  # Export multitask model for Knowledge Graphs (NER + Relation Extraction)
+  python scripts/export_gliner.py --model knowledgator/gliner-multitask-large-v0.5 --output ./models/ner/gliner-multitask
+
+  # Export dedicated relation extraction model
+  python scripts/export_gliner.py --model knowledgator/gliner-relex-large-v0.5 --output ./models/ner/gliner-relex
 
 Available Models:
+  Entity Extraction (NER only):
   - urchade/gliner_small-v2.1  (~166M params, ~330MB)
   - urchade/gliner_medium-v2.1 (~209M params, ~420MB)
   - urchade/gliner_large-v2.1  (~304M params, ~610MB)
+
+  Relation Extraction (NER + Relations):
+  - knowledgator/gliner-multitask-large-v0.5  (best for Knowledge Graphs)
+  - knowledgator/gliner-relex-large-v0.5      (dedicated relation extraction)
         """,
     )
 

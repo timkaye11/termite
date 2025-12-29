@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -30,6 +31,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
 	"github.com/bytedance/sonic/decoder"
 	"github.com/bytedance/sonic/encoder"
 	"go.uber.org/zap"
@@ -763,4 +765,354 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// handleApiKnowledgeGraph handles knowledge graph building requests
+func (ln *TermiteNode) handleApiKnowledgeGraph(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if any KG-capable models are available (NER or REBEL)
+	hasNER := ln.nerRegistry != nil && len(ln.nerRegistry.List()) > 0
+	hasREBEL := ln.relRegistry != nil && len(ln.relRegistry.List()) > 0
+	if !hasNER && !hasREBEL {
+		http.Error(w, "knowledge graph not available: no NER or relation extraction models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request using generated types
+	var req KnowledgeGraphRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Texts) == 0 {
+		http.Error(w, "texts are required", http.StatusBadRequest)
+		return
+	}
+
+	var entities [][]ner.Entity
+	var relations [][]ner.Relation
+
+	// Try REBEL model first (for relation extraction)
+	if ln.relRegistry != nil {
+		rebelModel, err := ln.relRegistry.Get(req.Model)
+		if err == nil {
+			ln.logger.Info("Using REBEL model for KG extraction",
+				zap.String("model", req.Model),
+				zap.Int("num_texts", len(req.Texts)))
+			// Use REBEL for relation extraction
+			entities, relations, err = ln.extractWithREBEL(r.Context(), rebelModel, req.Texts)
+			if err != nil {
+				ln.logger.Error("REBEL relation extraction failed",
+					zap.String("model", req.Model),
+					zap.Error(err))
+				http.Error(w, fmt.Sprintf("relation extraction failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+			// Log extraction results
+			totalEntities := 0
+			totalRelations := 0
+			for i := range entities {
+				totalEntities += len(entities[i])
+				totalRelations += len(relations[i])
+			}
+			ln.logger.Info("REBEL extraction results",
+				zap.Int("total_entities", totalEntities),
+				zap.Int("total_relations", totalRelations))
+			goto buildKG
+		}
+	}
+
+	// Fall back to GLiNER model with relation extraction support
+	{
+		glinerModel, err := ln.nerRegistry.GetGLiNER(req.Model)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("model not found: %s (tried REBEL and GLiNER registries)", req.Model), http.StatusNotFound)
+			return
+		}
+
+		// Cast to RelationExtractionModel to access relation extraction methods
+		relModel, ok := glinerModel.(ner.RelationExtractionModel)
+		if !ok {
+			http.Error(w, fmt.Sprintf("model %s does not support relation extraction", req.Model), http.StatusBadRequest)
+			return
+		}
+
+		// Get entity and relation labels (use defaults if not provided)
+		entityLabels := req.EntityLabels
+		if len(entityLabels) == 0 {
+			entityLabels = glinerModel.Labels()
+		}
+
+		relationLabels := req.RelationLabels
+		if len(relationLabels) == 0 {
+			relationLabels = relModel.RelationLabels()
+		}
+
+		// Extract entities and relations
+		entities, relations, err = relModel.RecognizeWithRelations(r.Context(), req.Texts, entityLabels, relationLabels)
+		if err != nil {
+			ln.logger.Error("GLiNER recognition with relations failed",
+				zap.String("model", req.Model),
+				zap.Error(err))
+			http.Error(w, fmt.Sprintf("entity/relation extraction failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+buildKG:
+
+	// Build KG config
+	kgConfig := ner.DefaultKGBuilderConfig()
+	// Apply config overrides if non-zero
+	if req.Config.SimilarityThreshold != 0 {
+		kgConfig.EntityResolver.SimilarityThreshold = req.Config.SimilarityThreshold
+	}
+	// TypeMustMatch - since bool defaults to false, we need to check if it was explicitly set
+	// For now, always use the value from request (false means don't require type match)
+	kgConfig.EntityResolver.TypeMustMatch = req.Config.TypeMustMatch
+	if req.Config.MinEntityConfidence != 0 {
+		kgConfig.MinEntityConfidence = req.Config.MinEntityConfidence
+	}
+	if req.Config.MinRelationConfidence != 0 {
+		kgConfig.MinRelationConfidence = req.Config.MinRelationConfidence
+	}
+	// DeduplicateRelations - bool, use the value directly
+	kgConfig.DeduplicateRelations = req.Config.DeduplicateRelations
+	// TrackProvenance - bool, use the value directly
+	kgConfig.TrackProvenance = req.Config.TrackProvenance
+
+	// Build extractions for each text
+	extractions := make([]ner.ExtractionInput, len(req.Texts))
+	for i, text := range req.Texts {
+		extractions[i] = ner.ExtractionInput{
+			DocumentID:     fmt.Sprintf("text-%d", i),
+			Entities:       entities[i],
+			Relations:      relations[i],
+			ExtractorModel: req.Model,
+			ExtractionTime: time.Now(),
+		}
+		_ = text // Used for document context
+	}
+
+	// Build knowledge graph
+	kg := ner.BuildKnowledgeGraphFromMultiple(extractions, kgConfig)
+
+	// Record metrics
+	RecordNERRequest(req.Model)
+	totalEntities := 0
+	for _, textEntities := range entities {
+		totalEntities += len(textEntities)
+	}
+	RecordNERCreation(req.Model, totalEntities)
+
+	ln.logger.Info("knowledge graph built",
+		zap.String("model", req.Model),
+		zap.Int("num_texts", len(req.Texts)),
+		zap.Int("nodes", kg.NodeCount()),
+		zap.Int("edges", kg.EdgeCount()))
+
+	// Convert to API response types
+	meta := kg.Metadata()
+	apiMeta := KGMetadata{
+		Name:          meta.Name,
+		Description:   meta.Description,
+		CreatedAt:     meta.CreatedAt,
+		UpdatedAt:     meta.UpdatedAt,
+		NodeCount:     meta.NodeCount,
+		EdgeCount:     meta.EdgeCount,
+		DocumentCount: meta.DocumentCount,
+		DocumentIds:   meta.DocumentIDs,
+	}
+
+	apiNodes := make([]KGNode, 0, kg.NodeCount())
+	for _, node := range kg.Nodes() {
+		apiNode := KGNode{
+			Id:            node.ID,
+			CanonicalName: node.CanonicalName,
+			Type:          node.Type,
+			Confidence:    node.Confidence,
+			CreatedAt:     node.CreatedAt,
+			UpdatedAt:     node.UpdatedAt,
+			Mentions:      node.Mentions,
+		}
+		if len(node.Properties) > 0 {
+			apiNode.Properties = make(map[string]interface{})
+			for k, v := range node.Properties {
+				apiNode.Properties[k] = v
+			}
+		}
+		if len(node.Provenance) > 0 {
+			apiProv := make([]KGProvenance, len(node.Provenance))
+			for j, p := range node.Provenance {
+				apiProv[j] = KGProvenance{
+					SourceDocument:      p.SourceDocument,
+					SourceUrl:           p.SourceURL,
+					SourceText:          p.SourceText,
+					CharOffsetStart:     p.CharOffsetStart,
+					CharOffsetEnd:       p.CharOffsetEnd,
+					ExtractorModel:      p.ExtractorModel,
+					ExtractionTimestamp: p.ExtractionTimestamp,
+					ExtractorConfidence: p.ExtractorConfidence,
+				}
+			}
+			apiNode.Provenance = apiProv
+		}
+		apiNodes = append(apiNodes, apiNode)
+	}
+
+	apiEdges := make([]KGEdge, 0, kg.EdgeCount())
+	for _, edge := range kg.Edges() {
+		apiEdge := KGEdge{
+			Id:         edge.ID,
+			SourceId:   edge.SourceID,
+			TargetId:   edge.TargetID,
+			Type:       edge.Type,
+			Confidence: edge.Confidence,
+			CreatedAt:  edge.CreatedAt,
+			UpdatedAt:  edge.UpdatedAt,
+		}
+		if len(edge.Properties) > 0 {
+			apiEdge.Properties = make(map[string]interface{})
+			for k, v := range edge.Properties {
+				apiEdge.Properties[k] = v
+			}
+		}
+		if len(edge.Provenance) > 0 {
+			apiProv := make([]KGProvenance, len(edge.Provenance))
+			for j, p := range edge.Provenance {
+				apiProv[j] = KGProvenance{
+					SourceDocument:      p.SourceDocument,
+					SourceUrl:           p.SourceURL,
+					SourceText:          p.SourceText,
+					CharOffsetStart:     p.CharOffsetStart,
+					CharOffsetEnd:       p.CharOffsetEnd,
+					ExtractorModel:      p.ExtractorModel,
+					ExtractionTimestamp: p.ExtractionTimestamp,
+					ExtractorConfidence: p.ExtractorConfidence,
+				}
+			}
+			apiEdge.Provenance = apiProv
+		}
+		apiEdges = append(apiEdges, apiEdge)
+	}
+
+	// Send response
+	kgResp := KnowledgeGraphResponse{
+		Model:    req.Model,
+		Metadata: apiMeta,
+		Nodes:    apiNodes,
+		Edges:    apiEdges,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(kgResp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// extractWithREBEL uses a REBEL model to extract entities and relations from text.
+// REBEL outputs triplets (subject, object, relation) which we convert to ner.Entity and ner.Relation format.
+func (ln *TermiteNode) extractWithREBEL(ctx context.Context, model seq2seq.RelationExtractor, texts []string) ([][]ner.Entity, [][]ner.Relation, error) {
+	output, err := model.ExtractRelations(ctx, texts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("REBEL extraction: %w", err)
+	}
+
+	entities := make([][]ner.Entity, len(texts))
+	relations := make([][]ner.Relation, len(texts))
+
+	for i, triplets := range output.Triplets {
+		text := texts[i]
+		entityMap := make(map[string]int) // entity text -> entity index
+		textEntities := []ner.Entity{}
+		textRelations := []ner.Relation{}
+
+		for _, triplet := range triplets {
+			// Create or find subject entity
+			subjectIdx, ok := entityMap[triplet.Subject]
+			if !ok {
+				subjectIdx = len(textEntities)
+				entityMap[triplet.Subject] = subjectIdx
+				start, end := findSpan(text, triplet.Subject)
+				textEntities = append(textEntities, ner.Entity{
+					Text:  triplet.Subject,
+					Label: "ENTITY", // REBEL doesn't provide entity types
+					Start: start,
+					End:   end,
+					Score: triplet.Score,
+				})
+			}
+
+			// Create or find object entity
+			objectIdx, ok := entityMap[triplet.Object]
+			if !ok {
+				objectIdx = len(textEntities)
+				entityMap[triplet.Object] = objectIdx
+				start, end := findSpan(text, triplet.Object)
+				textEntities = append(textEntities, ner.Entity{
+					Text:  triplet.Object,
+					Label: "ENTITY", // REBEL doesn't provide entity types
+					Start: start,
+					End:   end,
+					Score: triplet.Score,
+				})
+			}
+
+			// Create relation between subject and object
+			subjectEntity := textEntities[subjectIdx]
+			objectEntity := textEntities[objectIdx]
+			textRelations = append(textRelations, ner.Relation{
+				HeadEntity: subjectEntity,
+				TailEntity: objectEntity,
+				Label:      triplet.Relation,
+				Score:      triplet.Score,
+			})
+		}
+
+		entities[i] = textEntities
+		relations[i] = textRelations
+	}
+
+	return entities, relations, nil
+}
+
+// findSpan finds the character offsets of a substring in text.
+// Returns (0, len(substring)) if not found (to avoid nil spans).
+func findSpan(text, substring string) (int, int) {
+	// Case-insensitive search
+	idx := strings.Index(strings.ToLower(text), strings.ToLower(substring))
+	if idx >= 0 {
+		return idx, idx + len(substring)
+	}
+	// Not found - return placeholder span
+	return 0, len(substring)
 }

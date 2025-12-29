@@ -27,11 +27,20 @@ import (
 type ModelType string
 
 const (
+<<<<<<< Updated upstream
 	ModelTypeEmbedder     ModelType = "embedder"
 	ModelTypeChunker      ModelType = "chunker"
 	ModelTypeReranker     ModelType = "reranker"
 	ModelTypeRecognizer   ModelType = "recognizer"
 	ModelTypeQuestionator ModelType = "questionator"
+=======
+	ModelTypeEmbedder          ModelType = "embedder"
+	ModelTypeChunker           ModelType = "chunker"
+	ModelTypeReranker          ModelType = "reranker"
+	ModelTypeNER               ModelType = "ner"
+	ModelTypeGenerator         ModelType = "generator"
+	ModelTypeRelationExtractor ModelType = "rel"
+>>>>>>> Stashed changes
 )
 
 // Model capabilities
@@ -50,12 +59,23 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeChunker, nil
 	case "reranker", "rerankers":
 		return ModelTypeReranker, nil
+<<<<<<< Updated upstream
 	case "recognizer", "recognizers":
 		return ModelTypeRecognizer, nil
 	case "questionator", "questionators":
 		return ModelTypeQuestionator, nil
 	default:
 		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, recognizer, questionator)", s)
+=======
+	case "ner":
+		return ModelTypeNER, nil
+	case "generator", "generators":
+		return ModelTypeGenerator, nil
+	case "rel", "relation", "relations":
+		return ModelTypeRelationExtractor, nil
+	default:
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, ner, generator, rel)", s)
+>>>>>>> Stashed changes
 	}
 }
 
@@ -73,10 +93,19 @@ func (t ModelType) DirName() string {
 		return "chunkers"
 	case ModelTypeReranker:
 		return "rerankers"
+<<<<<<< Updated upstream
 	case ModelTypeRecognizer:
 		return "recognizers"
 	case ModelTypeQuestionator:
 		return "questionators"
+=======
+	case ModelTypeNER:
+		return "ner"
+	case ModelTypeGenerator:
+		return "generators"
+	case ModelTypeRelationExtractor:
+		return "rel"
+>>>>>>> Stashed changes
 	default:
 		return string(t) + "s"
 	}

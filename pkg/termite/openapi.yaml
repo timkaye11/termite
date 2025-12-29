@@ -427,6 +427,253 @@ components:
               type: string
           description: Generated texts (array of arrays, one per input, multiple per beam)
 
+<<<<<<< Updated upstream
+=======
+    # Knowledge Graph Types
+    KGNode:
+      type: object
+      required:
+        - id
+        - canonical_name
+        - type
+        - confidence
+      properties:
+        id:
+          type: string
+          description: Unique identifier for this node
+        canonical_name:
+          type: string
+          description: Primary/preferred name for this entity
+        type:
+          type: string
+          description: Entity type (e.g., "person", "organization", "location")
+        mentions:
+          type: array
+          items:
+            type: string
+          description: All surface forms that refer to this entity
+        properties:
+          type: object
+          additionalProperties: true
+          description: Arbitrary key-value attributes
+        confidence:
+          type: number
+          format: float
+          description: Aggregated confidence score (0.0-1.0)
+        provenance:
+          type: array
+          items:
+            $ref: "#/components/schemas/KGProvenance"
+          description: Sources of this entity
+        created_at:
+          type: string
+          format: date-time
+          description: When the node was first created
+        updated_at:
+          type: string
+          format: date-time
+          description: When the node was last modified
+
+    KGEdge:
+      type: object
+      required:
+        - id
+        - source_id
+        - target_id
+        - type
+        - confidence
+      properties:
+        id:
+          type: string
+          description: Unique identifier for this edge
+        source_id:
+          type: string
+          description: ID of the source node (head entity)
+        target_id:
+          type: string
+          description: ID of the target node (tail entity)
+        type:
+          type: string
+          description: Relationship type (e.g., "founded", "works_at", "located_in")
+        properties:
+          type: object
+          additionalProperties: true
+          description: Arbitrary key-value attributes
+        confidence:
+          type: number
+          format: float
+          description: Confidence score (0.0-1.0)
+        provenance:
+          type: array
+          items:
+            $ref: "#/components/schemas/KGProvenance"
+          description: Sources of this relationship
+        created_at:
+          type: string
+          format: date-time
+          description: When the edge was first created
+        updated_at:
+          type: string
+          format: date-time
+          description: When the edge was last modified
+
+    KGProvenance:
+      type: object
+      properties:
+        source_document:
+          type: string
+          description: Document ID or path
+        source_url:
+          type: string
+          description: URL of the source (if applicable)
+        source_text:
+          type: string
+          description: Original text span that yielded this extraction
+        char_offset_start:
+          type: integer
+          description: Character offset where the extraction begins
+        char_offset_end:
+          type: integer
+          description: Character offset where the extraction ends
+        extractor_model:
+          type: string
+          description: Model used for extraction (e.g., "gliner_small")
+        extraction_timestamp:
+          type: string
+          format: date-time
+          description: When the extraction occurred
+        extractor_confidence:
+          type: number
+          format: float
+          description: Raw confidence from the extraction model
+
+    KGMetadata:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Optional name for the knowledge graph
+        description:
+          type: string
+          description: Optional description
+        created_at:
+          type: string
+          format: date-time
+          description: When the graph was created
+        updated_at:
+          type: string
+          format: date-time
+          description: When the graph was last modified
+        node_count:
+          type: integer
+          description: Total number of nodes
+        edge_count:
+          type: integer
+          description: Total number of edges
+        document_count:
+          type: integer
+          description: Number of documents processed
+        document_ids:
+          type: array
+          items:
+            type: string
+          description: IDs of processed documents
+
+    KnowledgeGraphRequest:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: |
+            Name of model to use for entity/relation extraction. Supports:
+            - REBEL models from models_dir/rel/ (e.g., "rebel-large", "mrebel-large")
+            - GLiNER models from models_dir/ner/ (e.g., "gliner-multitask")
+          example: "rebel-large"
+        texts:
+          type: array
+          items:
+            type: string
+          description: Texts to extract entities and relations from for building the knowledge graph
+          example: ["Elon Musk founded SpaceX in 2002.", "SpaceX is headquartered in Hawthorne, California."]
+        entity_labels:
+          type: array
+          items:
+            type: string
+          description: |
+            Entity types to extract (GLiNER zero-shot NER).
+            If not provided, uses model defaults.
+          example: ["person", "organization", "location", "date"]
+        relation_labels:
+          type: array
+          items:
+            type: string
+          description: |
+            Relationship types to extract (GLiNER relation extraction).
+            If not provided, uses model defaults.
+          example: ["founded", "works_at", "located_in", "ceo_of"]
+        config:
+          $ref: "#/components/schemas/KGBuilderConfig"
+
+    KGBuilderConfig:
+      type: object
+      description: Configuration for knowledge graph building
+      properties:
+        similarity_threshold:
+          type: number
+          format: float
+          description: Minimum similarity (0.0-1.0) for entity resolution. Default 0.85
+          default: 0.85
+        type_must_match:
+          type: boolean
+          description: Require entities to have same type to merge. Default true
+          default: true
+        min_entity_confidence:
+          type: number
+          format: float
+          description: Minimum confidence for entities. Default 0.0
+          default: 0.0
+        min_relation_confidence:
+          type: number
+          format: float
+          description: Minimum confidence for relations. Default 0.0
+          default: 0.0
+        deduplicate_relations:
+          type: boolean
+          description: Remove duplicate relations. Default true
+          default: true
+        track_provenance:
+          type: boolean
+          description: Track extraction provenance. Default true
+          default: true
+
+    KnowledgeGraphResponse:
+      type: object
+      required:
+        - model
+        - metadata
+        - nodes
+        - edges
+      properties:
+        model:
+          type: string
+          description: Name of model used for extraction
+        metadata:
+          $ref: "#/components/schemas/KGMetadata"
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/KGNode"
+          description: Entity nodes in the knowledge graph
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/KGEdge"
+          description: Relationship edges in the knowledge graph
+
+>>>>>>> Stashed changes
     # Models Types
     ModelsResponse:
       type: object
@@ -434,8 +681,14 @@ components:
         - chunkers
         - rerankers
         - embedders
+<<<<<<< Updated upstream
         - recognizers
         - questionators
+=======
+        - ner
+        - generators
+        - rel
+>>>>>>> Stashed changes
       properties:
         chunkers:
           type: array
@@ -473,6 +726,12 @@ components:
             type: string
           description: Available Seq2Seq questionator models from models_dir/questionators/
           example: ["flan-t5-small", "lmqg-question-generation"]
+        rel:
+          type: array
+          items:
+            type: string
+          description: Available relation extraction models from models_dir/rel/ (REBEL)
+          example: ["rebel-large", "mrebel-large"]
 
     Config:
       type: object
@@ -1002,6 +1261,101 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+<<<<<<< Updated upstream
+=======
+  /knowledgegraph:
+    post:
+      summary: Build a knowledge graph from text
+      description: |
+        Extracts entities and relationships from text and builds a knowledge graph with entity resolution.
+
+        ## How It Works
+
+        1. **Entity Extraction**: Extracts entities from text (subjects and objects)
+        2. **Relation Extraction**: Finds relationships between entities
+        3. **Entity Resolution**: Merges similar entities using Jaro-Winkler similarity
+        4. **Graph Building**: Creates nodes (entities) and edges (relationships)
+
+        ## Supported Models
+
+        Two model types are supported:
+
+        ### REBEL Models (Recommended)
+        - End-to-end relation extraction using seq2seq generation
+        - Models are auto-discovered from `models_dir/rel/`
+        - Supports 200+ relation types out of the box
+        - Available models: `rebel-large`, `mrebel-large` (multilingual)
+        - Export using: `uv run scripts/export_rebel.py`
+
+        ### GLiNER Models
+        - Zero-shot entity and relation extraction
+        - Requires a GLiNER model that supports relation extraction (multitask models)
+        - Models are auto-discovered from `models_dir/ner/`
+
+        ## Entity Resolution
+
+        The builder automatically resolves entities that refer to the same real-world entity:
+        - "John Smith", "John", "J. Smith" → merged into single node
+        - Configurable similarity threshold (default: 0.85)
+        - Tracks provenance for all merged mentions
+
+        ## Example
+
+        ```json
+        {
+          "model": "gliner-multitask",
+          "texts": [
+            "Elon Musk founded SpaceX in 2002.",
+            "SpaceX is headquartered in Hawthorne, California."
+          ],
+          "entity_labels": ["person", "organization", "location", "date"],
+          "relation_labels": ["founded", "located_in", "headquarters"]
+        }
+        ```
+
+        Returns a knowledge graph with:
+        - Nodes: Elon Musk (person), SpaceX (organization), Hawthorne (location), California (location), 2002 (date)
+        - Edges: Elon Musk -[founded]-> SpaceX, SpaceX -[located_in]-> Hawthorne
+      operationId: buildKnowledgeGraph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeGraphRequest"
+      responses:
+        "200":
+          description: Knowledge graph built successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeGraphResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: NER service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+>>>>>>> Stashed changes
   /models:
     get:
       summary: List available models
