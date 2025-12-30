@@ -355,6 +355,45 @@ func (c *TermiteClient) Relate(ctx context.Context, model string, texts []string
 	return resp.JSON200, nil
 }
 
+// BuildKnowledgeGraph builds a knowledge graph from texts using REBEL or GLiNER models.
+// For REBEL models, it extracts both entities and relations.
+// For GLiNER models, it extracts entities only with optional custom labels.
+func (c *TermiteClient) BuildKnowledgeGraph(ctx context.Context, model string, texts []string, entityLabels []string, config *oapi.KGBuilderConfig) (*oapi.KnowledgeGraphResponse, error) {
+	req := oapi.KnowledgeGraphRequest{
+		Model: model,
+		Texts: texts,
+	}
+	if len(entityLabels) > 0 {
+		req.EntityLabels = entityLabels
+	}
+	if config != nil {
+		req.Config = *config
+	}
+
+	resp, err := c.client.BuildKnowledgeGraphWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
 // deserializeFloatArrays reconstructs a 2D float32 array from binary format.
 // Format: uint64(numVectors) + uint64(dimension) + float32 values in little endian
 func deserializeFloatArrays(r io.Reader) ([][]float32, error) {

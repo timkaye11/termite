@@ -987,6 +987,14 @@ func (r *RelatorRegistry) Get(modelName string) (seq2seq.RelationExtractor, erro
 	return model, nil
 }
 
+// Has checks if a relator model exists in the registry
+func (r *RelatorRegistry) Has(modelName string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.models[modelName]
+	return ok
+}
+
 // List returns all available relator model names
 func (r *RelatorRegistry) List() []string {
 	r.mu.RLock()

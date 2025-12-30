@@ -85,6 +85,11 @@ func (t *TermiteAPI) ExtractRelations(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRelate(w, r)
 }
 
+// BuildKnowledgeGraph implements ServerInterface
+func (t *TermiteAPI) BuildKnowledgeGraph(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiKnowledgeGraph(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -872,5 +877,304 @@ func (ln *TermiteNode) handleApiRelate(w http.ResponseWriter, r *http.Request) {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+}
+
+// handleApiKnowledgeGraph handles knowledge graph building requests
+func (ln *TermiteNode) handleApiKnowledgeGraph(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if at least one model type is available
+	hasRelator := ln.relatorRegistry != nil && len(ln.relatorRegistry.List()) > 0
+	hasRecognizer := ln.nerRegistry != nil && len(ln.nerRegistry.List()) > 0
+
+	if !hasRelator && !hasRecognizer {
+		http.Error(w, "knowledge graph building not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request
+	var req KnowledgeGraphRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Texts) == 0 {
+		http.Error(w, "texts are required", http.StatusBadRequest)
+		return
+	}
+
+	// Build KG configuration from request
+	// Use defaults and override with any non-zero values from request
+	kgConfig := ner.DefaultKGBuilderConfig()
+	if req.Config.SimilarityThreshold > 0 {
+		kgConfig.EntityResolver.SimilarityThreshold = req.Config.SimilarityThreshold
+	}
+	// TypeMustMatch, DeduplicateRelations, TrackProvenance all default to true in both API and internal config
+	// Since we can't distinguish "not set" from "set to false", we just use the internal defaults
+	// which match the API defaults
+	if req.Config.MinEntityConfidence > 0 {
+		kgConfig.MinEntityConfidence = req.Config.MinEntityConfidence
+	}
+	if req.Config.MinRelationConfidence > 0 {
+		kgConfig.MinRelationConfidence = req.Config.MinRelationConfidence
+	}
+
+	// Determine if model is a relator or recognizer
+	isRelator := hasRelator && ln.relatorRegistry.Has(req.Model)
+	isRecognizer := hasRecognizer && ln.nerRegistry.IsRecognizer(req.Model)
+
+	if !isRelator && !isRecognizer {
+		// Also try standard NER models
+		if hasRecognizer {
+			_, nerErr := ln.nerRegistry.Get(req.Model)
+			if nerErr == nil {
+				// It's a standard NER model - we can use it for entities only
+				isRecognizer = true
+			}
+		}
+	}
+
+	if !isRelator && !isRecognizer {
+		http.Error(w, fmt.Sprintf("model not found: %s (check relators/ or recognizers/ directories)", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Build knowledge graph
+	builder := ner.NewKGBuilder(kgConfig)
+
+	for i, text := range req.Texts {
+		var entities []ner.Entity
+		var relations []ner.Relation
+
+		if isRelator {
+			// Use REBEL for joint entity and relation extraction
+			model, err := ln.relatorRegistry.Get(req.Model)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+				return
+			}
+
+			output, err := model.ExtractRelations(r.Context(), []string{text})
+			if err != nil {
+				ln.logger.Error("relation extraction failed",
+					zap.String("model", req.Model),
+					zap.Int("text_index", i),
+					zap.Error(err))
+				http.Error(w, fmt.Sprintf("relation extraction failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			// Convert REBEL triplets to entities and relations
+			if len(output.Triplets) > 0 {
+				for _, triplet := range output.Triplets[0] {
+					// Create entities from subject and object
+					subjectEntity := ner.Entity{
+						Text:  triplet.Subject,
+						Label: "entity", // REBEL doesn't provide entity types
+						Score: triplet.Score,
+					}
+					objectEntity := ner.Entity{
+						Text:  triplet.Object,
+						Label: "entity",
+						Score: triplet.Score,
+					}
+					entities = append(entities, subjectEntity, objectEntity)
+
+					// Create relation
+					relations = append(relations, ner.Relation{
+						HeadEntity: subjectEntity,
+						TailEntity: objectEntity,
+						Label:      triplet.Relation,
+						Score:      triplet.Score,
+					})
+				}
+			}
+		} else {
+			// Use GLiNER/NER for entity extraction
+			labels := req.EntityLabels
+			if len(labels) == 0 {
+				labels = []string{"person", "organization", "location", "date", "event", "product"}
+			}
+
+			// Try zero-shot recognizer first
+			if ln.nerRegistry.IsRecognizer(req.Model) {
+				recognizer, err := ln.nerRegistry.GetRecognizer(req.Model)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("recognizer not found: %s", req.Model), http.StatusNotFound)
+					return
+				}
+
+				extractedEntities, err := recognizer.RecognizeWithLabels(r.Context(), []string{text}, labels)
+				if err != nil {
+					ln.logger.Error("entity extraction failed",
+						zap.String("model", req.Model),
+						zap.Int("text_index", i),
+						zap.Error(err))
+					http.Error(w, fmt.Sprintf("entity extraction failed: %v", err), http.StatusInternalServerError)
+					return
+				}
+				if len(extractedEntities) > 0 {
+					entities = extractedEntities[0]
+				}
+			} else {
+				// Fall back to standard NER model
+				model, err := ln.nerRegistry.Get(req.Model)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+					return
+				}
+
+				extractedEntities, err := model.Recognize(r.Context(), []string{text})
+				if err != nil {
+					ln.logger.Error("entity extraction failed",
+						zap.String("model", req.Model),
+						zap.Int("text_index", i),
+						zap.Error(err))
+					http.Error(w, fmt.Sprintf("entity extraction failed: %v", err), http.StatusInternalServerError)
+					return
+				}
+				if len(extractedEntities) > 0 {
+					entities = extractedEntities[0]
+				}
+			}
+
+			// Note: relation extraction for GLiNER would require a separate model
+			// For now, we just extract entities
+		}
+
+		// Add extraction to builder
+		input := ner.ExtractionInput{
+			DocumentID:     fmt.Sprintf("text_%d", i),
+			Entities:       entities,
+			Relations:      relations,
+			ExtractorModel: req.Model,
+		}
+		if err := builder.AddExtraction(input); err != nil {
+			ln.logger.Error("failed to add extraction to KG",
+				zap.Int("text_index", i),
+				zap.Error(err))
+		}
+	}
+
+	// Get the built graph
+	graph := builder.Graph()
+
+	// Convert to API response types
+	metadata := graph.Metadata()
+	apiMetadata := KGMetadata{
+		Name:          metadata.Name,
+		Description:   metadata.Description,
+		CreatedAt:     metadata.CreatedAt,
+		UpdatedAt:     metadata.UpdatedAt,
+		NodeCount:     metadata.NodeCount,
+		EdgeCount:     metadata.EdgeCount,
+		DocumentCount: metadata.DocumentCount,
+		DocumentIds:   metadata.DocumentIDs,
+	}
+
+	// Convert nodes
+	nodes := graph.Nodes()
+	apiNodes := make([]KGNode, len(nodes))
+	for i, node := range nodes {
+		apiNodes[i] = KGNode{
+			Id:            node.ID,
+			CanonicalName: node.CanonicalName,
+			Type:          node.Type,
+			Mentions:      node.Mentions,
+			Confidence:    node.Confidence,
+			CreatedAt:     node.CreatedAt,
+			UpdatedAt:     node.UpdatedAt,
+		}
+		if len(node.Provenance) > 0 {
+			apiProvenance := make([]KGProvenance, len(node.Provenance))
+			for j, prov := range node.Provenance {
+				apiProvenance[j] = convertProvenance(prov)
+			}
+			apiNodes[i].Provenance = apiProvenance
+		}
+	}
+
+	// Convert edges
+	edges := graph.Edges()
+	apiEdges := make([]KGEdge, len(edges))
+	for i, edge := range edges {
+		apiEdges[i] = KGEdge{
+			Id:         edge.ID,
+			SourceId:   edge.SourceID,
+			TargetId:   edge.TargetID,
+			Type:       edge.Type,
+			Confidence: edge.Confidence,
+			CreatedAt:  edge.CreatedAt,
+			UpdatedAt:  edge.UpdatedAt,
+		}
+		if len(edge.Provenance) > 0 {
+			apiProvenance := make([]KGProvenance, len(edge.Provenance))
+			for j, prov := range edge.Provenance {
+				apiProvenance[j] = convertProvenance(prov)
+			}
+			apiEdges[i].Provenance = apiProvenance
+		}
+	}
+
+	ln.logger.Info("knowledge graph building completed",
+		zap.String("model", req.Model),
+		zap.Int("num_texts", len(req.Texts)),
+		zap.Int("num_nodes", len(apiNodes)),
+		zap.Int("num_edges", len(apiEdges)))
+
+	// Send response
+	resp := KnowledgeGraphResponse{
+		Model:    req.Model,
+		Metadata: apiMetadata,
+		Nodes:    apiNodes,
+		Edges:    apiEdges,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// convertProvenance converts internal Provenance to API KGProvenance
+func convertProvenance(prov ner.Provenance) KGProvenance {
+	return KGProvenance{
+		SourceDocument:      prov.SourceDocument,
+		SourceUrl:           prov.SourceURL,
+		SourceText:          prov.SourceText,
+		CharOffsetStart:     prov.CharOffsetStart,
+		CharOffsetEnd:       prov.CharOffsetEnd,
+		ExtractorModel:      prov.ExtractorModel,
+		ExtractionTimestamp: prov.ExtractionTimestamp,
+		ExtractorConfidence: prov.ExtractorConfidence,
 	}
 }
