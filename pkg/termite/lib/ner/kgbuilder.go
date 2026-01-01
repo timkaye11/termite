@@ -15,6 +15,7 @@
 package ner
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -41,12 +42,26 @@ type EntityResolverConfig struct {
 	CaseSensitive bool
 
 	// UseJaroWinkler uses Jaro-Winkler similarity instead of simple overlap.
-	// Default: true
+	// Default: true (only used when Strategy is StringSimilarity)
 	UseJaroWinkler bool
 
 	// MergeConfidenceStrategy determines how to combine confidence scores
 	// when merging entities. Default: MaxConfidence
 	MergeConfidenceStrategy ConfidenceStrategy
+
+	// Strategy defines the resolution method to use.
+	// Default: StringSimilarity (maintains backward compatibility)
+	Strategy ResolutionStrategy
+
+	// HybridLowerThreshold is the lower bound for ambiguous string similarity
+	// in HybridSimilarity mode. Matches below this use string similarity only.
+	// Default: 0.7
+	HybridLowerThreshold float32
+
+	// HybridUpperThreshold is the upper bound for ambiguous string similarity
+	// in HybridSimilarity mode. Matches above this use string similarity only.
+	// Default: 0.9
+	HybridUpperThreshold float32
 }
 
 // ConfidenceStrategy defines how to combine confidence scores
@@ -61,6 +76,22 @@ const (
 	WeightedConfidence
 )
 
+// ResolutionStrategy defines the method used for entity resolution
+type ResolutionStrategy int
+
+const (
+	// StringSimilarity uses string-based similarity (Jaro-Winkler or token overlap).
+	// This is the default and maintains backward compatibility.
+	StringSimilarity ResolutionStrategy = iota
+	// VectorSimilarity uses embedding-based cosine similarity for resolution.
+	// Requires a VectorEntityResolver to be set on the KGBuilder.
+	VectorSimilarity
+	// HybridSimilarity uses string similarity first, falling back to vector
+	// similarity for ambiguous cases (string similarity between 0.7-0.9).
+	// Requires a VectorEntityResolver to be set on the KGBuilder.
+	HybridSimilarity
+)
+
 // DefaultEntityResolverConfig returns the default entity resolution configuration
 func DefaultEntityResolverConfig() EntityResolverConfig {
 	return EntityResolverConfig{
@@ -69,6 +100,9 @@ func DefaultEntityResolverConfig() EntityResolverConfig {
 		CaseSensitive:           false,
 		UseJaroWinkler:          true,
 		MergeConfidenceStrategy: MaxConfidence,
+		Strategy:                StringSimilarity,
+		HybridLowerThreshold:    0.7,
+		HybridUpperThreshold:    0.9,
 	}
 }
 
@@ -111,8 +145,9 @@ func DefaultKGBuilderConfig() KGBuilderConfig {
 
 // KGBuilder builds knowledge graphs from extracted entities and relations
 type KGBuilder struct {
-	config KGBuilderConfig
-	graph  *KnowledgeGraph
+	config         KGBuilderConfig
+	graph          *KnowledgeGraph
+	vectorResolver *VectorEntityResolver
 }
 
 // NewKGBuilder creates a new knowledge graph builder
@@ -134,6 +169,26 @@ func NewKGBuilderWithGraph(config KGBuilderConfig, graph *KnowledgeGraph) *KGBui
 // Graph returns the underlying knowledge graph
 func (b *KGBuilder) Graph() *KnowledgeGraph {
 	return b.graph
+}
+
+// SetVectorResolver sets the vector entity resolver for vector-based resolution.
+// This is required when using VectorSimilarity or HybridSimilarity resolution strategies.
+// The resolver will be used to compute embedding-based similarity between entities.
+//
+// Example usage:
+//
+//	embedder := func(ctx context.Context, texts []string) ([][]float32, error) {
+//	    return embeddingService.Embed(ctx, texts)
+//	}
+//	resolver := NewVectorEntityResolver(embedder)
+//	builder.SetVectorResolver(resolver)
+func (b *KGBuilder) SetVectorResolver(resolver *VectorEntityResolver) {
+	b.vectorResolver = resolver
+}
+
+// VectorResolver returns the current vector entity resolver, if set.
+func (b *KGBuilder) VectorResolver() *VectorEntityResolver {
+	return b.vectorResolver
 }
 
 // =============================================================================
@@ -161,8 +216,17 @@ type ExtractionInput struct {
 	ExtractionTime time.Time
 }
 
-// AddExtraction adds entities and relations from an extraction to the graph
+// AddExtraction adds entities and relations from an extraction to the graph.
+// This is a convenience method that uses context.Background().
+// For vector-based resolution strategies, use AddExtractionWithContext instead.
 func (b *KGBuilder) AddExtraction(input ExtractionInput) error {
+	return b.AddExtractionWithContext(context.Background(), input)
+}
+
+// AddExtractionWithContext adds entities and relations from an extraction to the graph.
+// The context is used for vector embedding operations when using VectorSimilarity
+// or HybridSimilarity resolution strategies.
+func (b *KGBuilder) AddExtractionWithContext(ctx context.Context, input ExtractionInput) error {
 	if input.ExtractionTime.IsZero() {
 		input.ExtractionTime = time.Now()
 	}
@@ -176,7 +240,7 @@ func (b *KGBuilder) AddExtraction(input ExtractionInput) error {
 			continue
 		}
 
-		nodeID, err := b.addOrResolveEntity(entity, input)
+		nodeID, err := b.addOrResolveEntity(ctx, entity, input)
 		if err != nil {
 			return err
 		}
@@ -193,7 +257,7 @@ func (b *KGBuilder) AddExtraction(input ExtractionInput) error {
 		headNodeID, ok := entityToNode[entityKey(relation.HeadEntity)]
 		if !ok {
 			// Entity wasn't added (maybe below threshold), add it now
-			nodeID, err := b.addOrResolveEntity(relation.HeadEntity, input)
+			nodeID, err := b.addOrResolveEntity(ctx, relation.HeadEntity, input)
 			if err != nil {
 				return err
 			}
@@ -203,7 +267,7 @@ func (b *KGBuilder) AddExtraction(input ExtractionInput) error {
 
 		tailNodeID, ok := entityToNode[entityKey(relation.TailEntity)]
 		if !ok {
-			nodeID, err := b.addOrResolveEntity(relation.TailEntity, input)
+			nodeID, err := b.addOrResolveEntity(ctx, relation.TailEntity, input)
 			if err != nil {
 				return err
 			}
@@ -229,9 +293,12 @@ func (b *KGBuilder) AddExtraction(input ExtractionInput) error {
 }
 
 // addOrResolveEntity adds an entity or resolves it to an existing node
-func (b *KGBuilder) addOrResolveEntity(entity Entity, input ExtractionInput) (string, error) {
+func (b *KGBuilder) addOrResolveEntity(ctx context.Context, entity Entity, input ExtractionInput) (string, error) {
 	// Try to find an existing node that matches this entity
-	existingNode := b.findMatchingNode(entity)
+	existingNode, err := b.findMatchingNode(ctx, entity)
+	if err != nil {
+		return "", err
+	}
 
 	provenance := Provenance{
 		SourceDocument:      input.DocumentID,
@@ -269,8 +336,9 @@ func (b *KGBuilder) addOrResolveEntity(entity Entity, input ExtractionInput) (st
 	return node.ID, nil
 }
 
-// findMatchingNode finds an existing node that matches the entity
-func (b *KGBuilder) findMatchingNode(entity Entity) *KGNode {
+// findMatchingNode finds an existing node that matches the entity using the configured
+// resolution strategy (StringSimilarity, VectorSimilarity, or HybridSimilarity).
+func (b *KGBuilder) findMatchingNode(ctx context.Context, entity Entity) (*KGNode, error) {
 	config := b.config.EntityResolver
 
 	// Gather candidates from multiple sources
@@ -294,36 +362,39 @@ func (b *KGBuilder) findMatchingNode(entity Entity) *KGNode {
 		}
 	}
 
-	// Find best match among all candidates
-	var bestMatch *KGNode
-	var bestScore float32
-
+	// Filter candidates by type if required
+	candidates := make([]*KGNode, 0, len(candidateMap))
 	for _, candidate := range candidateMap {
-		// Check type match if required
 		if config.TypeMustMatch && normalizeType(candidate.Type) != normalizeType(entity.Label) {
 			continue
 		}
+		candidates = append(candidates, candidate)
+	}
 
-		// Calculate similarity against canonical name
-		var similarity float32
-		if config.UseJaroWinkler {
-			similarity = jaroWinklerSimilarity(entity.Text, candidate.CanonicalName, config.CaseSensitive)
-		} else {
-			similarity = tokenOverlapSimilarity(entity.Text, candidate.CanonicalName, config.CaseSensitive)
-		}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
 
-		// Also check against all mentions
-		for _, mention := range candidate.Mentions {
-			var mentionSim float32
-			if config.UseJaroWinkler {
-				mentionSim = jaroWinklerSimilarity(entity.Text, mention, config.CaseSensitive)
-			} else {
-				mentionSim = tokenOverlapSimilarity(entity.Text, mention, config.CaseSensitive)
-			}
-			if mentionSim > similarity {
-				similarity = mentionSim
-			}
-		}
+	// Use the appropriate resolution strategy
+	switch config.Strategy {
+	case VectorSimilarity:
+		return b.findMatchingNodeVector(ctx, entity, candidates)
+	case HybridSimilarity:
+		return b.findMatchingNodeHybrid(ctx, entity, candidates)
+	default: // StringSimilarity
+		return b.findMatchingNodeString(entity, candidates), nil
+	}
+}
+
+// findMatchingNodeString finds the best matching node using string similarity.
+func (b *KGBuilder) findMatchingNodeString(entity Entity, candidates []*KGNode) *KGNode {
+	config := b.config.EntityResolver
+
+	var bestMatch *KGNode
+	var bestScore float32
+
+	for _, candidate := range candidates {
+		similarity := b.computeStringSimilarity(entity.Text, candidate, config)
 
 		if similarity >= config.SimilarityThreshold && similarity > bestScore {
 			bestScore = similarity
@@ -332,6 +403,125 @@ func (b *KGBuilder) findMatchingNode(entity Entity) *KGNode {
 	}
 
 	return bestMatch
+}
+
+// findMatchingNodeVector finds the best matching node using vector similarity.
+// Returns an error if the vector resolver is not configured.
+func (b *KGBuilder) findMatchingNodeVector(ctx context.Context, entity Entity, candidates []*KGNode) (*KGNode, error) {
+	if b.vectorResolver == nil {
+		return nil, nil // Fall back to no match if resolver not configured
+	}
+
+	config := b.config.EntityResolver
+
+	var bestMatch *KGNode
+	var bestScore float32
+
+	for _, candidate := range candidates {
+		similarity, err := b.computeVectorSimilarity(ctx, entity.Text, candidate)
+		if err != nil {
+			return nil, err
+		}
+
+		if similarity >= config.SimilarityThreshold && similarity > bestScore {
+			bestScore = similarity
+			bestMatch = candidate
+		}
+	}
+
+	return bestMatch, nil
+}
+
+// findMatchingNodeHybrid uses string similarity first, falling back to vector
+// similarity for ambiguous cases (string similarity between hybrid thresholds).
+func (b *KGBuilder) findMatchingNodeHybrid(ctx context.Context, entity Entity, candidates []*KGNode) (*KGNode, error) {
+	config := b.config.EntityResolver
+
+	var bestMatch *KGNode
+	var bestScore float32
+	var ambiguousCandidates []*KGNode
+
+	// First pass: use string similarity
+	for _, candidate := range candidates {
+		similarity := b.computeStringSimilarity(entity.Text, candidate, config)
+
+		// Strong match - use string similarity
+		if similarity >= config.HybridUpperThreshold {
+			if similarity > bestScore {
+				bestScore = similarity
+				bestMatch = candidate
+			}
+		} else if similarity >= config.HybridLowerThreshold {
+			// Ambiguous range - collect for vector comparison
+			ambiguousCandidates = append(ambiguousCandidates, candidate)
+		}
+		// Below lower threshold - not a match
+	}
+
+	// If we have a strong match, return it
+	if bestMatch != nil {
+		return bestMatch, nil
+	}
+
+	// If no strong matches and we have ambiguous candidates, use vector similarity
+	if len(ambiguousCandidates) > 0 && b.vectorResolver != nil {
+		return b.findMatchingNodeVector(ctx, entity, ambiguousCandidates)
+	}
+
+	return nil, nil
+}
+
+// computeStringSimilarity computes the string similarity between entity text and a candidate node.
+// It checks both the canonical name and all mentions, returning the highest score.
+func (b *KGBuilder) computeStringSimilarity(entityText string, candidate *KGNode, config EntityResolverConfig) float32 {
+	var similarity float32
+	if config.UseJaroWinkler {
+		similarity = jaroWinklerSimilarity(entityText, candidate.CanonicalName, config.CaseSensitive)
+	} else {
+		similarity = tokenOverlapSimilarity(entityText, candidate.CanonicalName, config.CaseSensitive)
+	}
+
+	// Also check against all mentions
+	for _, mention := range candidate.Mentions {
+		var mentionSim float32
+		if config.UseJaroWinkler {
+			mentionSim = jaroWinklerSimilarity(entityText, mention, config.CaseSensitive)
+		} else {
+			mentionSim = tokenOverlapSimilarity(entityText, mention, config.CaseSensitive)
+		}
+		if mentionSim > similarity {
+			similarity = mentionSim
+		}
+	}
+
+	return similarity
+}
+
+// computeVectorSimilarity computes the vector similarity between entity text and a candidate node.
+// It checks both the canonical name and all mentions, returning the highest score.
+func (b *KGBuilder) computeVectorSimilarity(ctx context.Context, entityText string, candidate *KGNode) (float32, error) {
+	if b.vectorResolver == nil {
+		return 0, nil
+	}
+
+	// Compare against canonical name
+	similarity, err := b.vectorResolver.ComputeSimilarity(ctx, entityText, candidate.CanonicalName)
+	if err != nil {
+		return 0, err
+	}
+
+	// Also check against all mentions
+	for _, mention := range candidate.Mentions {
+		mentionSim, err := b.vectorResolver.ComputeSimilarity(ctx, entityText, mention)
+		if err != nil {
+			return 0, err
+		}
+		if mentionSim > similarity {
+			similarity = mentionSim
+		}
+	}
+
+	return similarity, nil
 }
 
 // mergeEntityIntoNode merges an entity into an existing node
