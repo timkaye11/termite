@@ -368,7 +368,10 @@ func TestKGBuilder_BuildSimple(t *testing.T) {
 		},
 	}
 
-	kg := BuildKnowledgeGraph(entities, relations)
+	kg, err := BuildKnowledgeGraph(entities, relations)
+	if err != nil {
+		t.Fatalf("BuildKnowledgeGraph failed: %v", err)
+	}
 
 	if kg.NodeCount() != 2 {
 		t.Errorf("expected 2 nodes, got %d", kg.NodeCount())
@@ -398,7 +401,10 @@ func TestKGBuilder_EntityResolution(t *testing.T) {
 	config := DefaultKGBuilderConfig()
 	config.EntityResolver.SimilarityThreshold = 0.7 // Lower threshold for testing
 
-	kg := BuildKnowledgeGraphWithConfig(entities, nil, config)
+	kg, err := BuildKnowledgeGraphWithConfig(entities, nil, config)
+	if err != nil {
+		t.Fatalf("BuildKnowledgeGraphWithConfig failed: %v", err)
+	}
 
 	// Should have merged similar person entities
 	people := kg.GetNodesByType("person")
@@ -495,7 +501,10 @@ func TestKGBuilder_ConfidenceStrategies(t *testing.T) {
 	// Test MaxConfidence strategy
 	config := DefaultKGBuilderConfig()
 	config.EntityResolver.MergeConfidenceStrategy = MaxConfidence
-	kg := BuildKnowledgeGraphWithConfig(entities, nil, config)
+	kg, err := BuildKnowledgeGraphWithConfig(entities, nil, config)
+	if err != nil {
+		t.Fatalf("BuildKnowledgeGraphWithConfig failed: %v", err)
+	}
 	people := kg.GetNodesByType("person")
 	if len(people) != 1 {
 		t.Fatalf("expected 1 person node, got %d", len(people))

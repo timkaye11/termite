@@ -15,6 +15,7 @@
 package ner
 
 import (
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -398,7 +399,7 @@ func (b *KGBuilder) addRelation(relation Relation, sourceID, targetID string, in
 				existing.Confidence = relation.Score
 			}
 
-			return b.graph.UpdateNode(b.graph.GetNode(sourceID)) // Trigger update
+			return b.graph.UpdateEdge(existing)
 		}
 	}
 
@@ -426,7 +427,7 @@ func (b *KGBuilder) addRelation(relation Relation, sourceID, targetID string, in
 
 // entityKey creates a unique key for an entity based on text, label, and position
 func entityKey(entity Entity) string {
-	return entity.Text + "|" + entity.Label + "|" + string(rune(entity.Start)) + "|" + string(rune(entity.End))
+	return entity.Text + "|" + entity.Label + "|" + strconv.Itoa(entity.Start) + "|" + strconv.Itoa(entity.End)
 }
 
 // =============================================================================
@@ -435,12 +436,12 @@ func entityKey(entity Entity) string {
 
 // BuildKnowledgeGraph is a convenience function to build a knowledge graph
 // from entities and relations with default configuration
-func BuildKnowledgeGraph(entities []Entity, relations []Relation) *KnowledgeGraph {
+func BuildKnowledgeGraph(entities []Entity, relations []Relation) (*KnowledgeGraph, error) {
 	return BuildKnowledgeGraphWithConfig(entities, relations, DefaultKGBuilderConfig())
 }
 
 // BuildKnowledgeGraphWithConfig builds a knowledge graph with custom configuration
-func BuildKnowledgeGraphWithConfig(entities []Entity, relations []Relation, config KGBuilderConfig) *KnowledgeGraph {
+func BuildKnowledgeGraphWithConfig(entities []Entity, relations []Relation, config KGBuilderConfig) (*KnowledgeGraph, error) {
 	builder := NewKGBuilder(config)
 
 	input := ExtractionInput{
@@ -449,20 +450,24 @@ func BuildKnowledgeGraphWithConfig(entities []Entity, relations []Relation, conf
 		ExtractionTime: time.Now(),
 	}
 
-	_ = builder.AddExtraction(input)
+	if err := builder.AddExtraction(input); err != nil {
+		return nil, err
+	}
 
-	return builder.Graph()
+	return builder.Graph(), nil
 }
 
 // BuildKnowledgeGraphFromMultiple builds a knowledge graph from multiple extraction results
-func BuildKnowledgeGraphFromMultiple(extractions []ExtractionInput, config KGBuilderConfig) *KnowledgeGraph {
+func BuildKnowledgeGraphFromMultiple(extractions []ExtractionInput, config KGBuilderConfig) (*KnowledgeGraph, error) {
 	builder := NewKGBuilder(config)
 
 	for _, extraction := range extractions {
-		_ = builder.AddExtraction(extraction)
+		if err := builder.AddExtraction(extraction); err != nil {
+			return nil, err
+		}
 	}
 
-	return builder.Graph()
+	return builder.Graph(), nil
 }
 
 // =============================================================================

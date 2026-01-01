@@ -966,120 +966,131 @@ func (ln *TermiteNode) handleApiKnowledgeGraph(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Build knowledge graph
+	// Build knowledge graph using batch processing
 	builder := ner.NewKGBuilder(kgConfig)
 
-	for i, text := range req.Texts {
-		var entities []ner.Entity
-		var relations []ner.Relation
+	if isRelator {
+		// Get model once outside the loop
+		relator, err := ln.relatorRegistry.Get(req.Model)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+			return
+		}
 
-		if isRelator {
-			// Use REBEL for joint entity and relation extraction
-			model, err := ln.relatorRegistry.Get(req.Model)
+		// Batch process all texts at once
+		output, err := relator.ExtractRelations(r.Context(), req.Texts)
+		if err != nil {
+			ln.logger.Error("relation extraction failed",
+				zap.String("model", req.Model),
+				zap.Int("num_texts", len(req.Texts)),
+				zap.Error(err))
+			http.Error(w, fmt.Sprintf("relation extraction failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Process each text's triplets
+		for i, textTriplets := range output.Triplets {
+			var entities []ner.Entity
+			var relations []ner.Relation
+
+			for _, triplet := range textTriplets {
+				subjectEntity := ner.Entity{
+					Text:  triplet.Subject,
+					Label: "entity", // REBEL doesn't provide entity types
+					Score: triplet.Score,
+				}
+				objectEntity := ner.Entity{
+					Text:  triplet.Object,
+					Label: "entity",
+					Score: triplet.Score,
+				}
+				entities = append(entities, subjectEntity, objectEntity)
+				relations = append(relations, ner.Relation{
+					HeadEntity: subjectEntity,
+					TailEntity: objectEntity,
+					Label:      triplet.Relation,
+					Score:      triplet.Score,
+				})
+			}
+
+			input := ner.ExtractionInput{
+				DocumentID:     fmt.Sprintf("text_%d", i),
+				Entities:       entities,
+				Relations:      relations,
+				ExtractorModel: req.Model,
+			}
+			if err := builder.AddExtraction(input); err != nil {
+				ln.logger.Error("failed to add extraction to KG",
+					zap.String("model", req.Model),
+					zap.Int("text_index", i),
+					zap.Error(err))
+				http.Error(w, fmt.Sprintf("failed to build knowledge graph: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+	} else {
+		// Use GLiNER/NER for entity extraction
+		labels := req.EntityLabels
+		if len(labels) == 0 {
+			labels = []string{"person", "organization", "location", "date", "event", "product"}
+		}
+
+		var allEntities [][]ner.Entity
+
+		if ln.nerRegistry.IsRecognizer(req.Model) {
+			// Get recognizer once outside the loop
+			recognizer, err := ln.nerRegistry.GetRecognizer(req.Model)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("recognizer not found: %s", req.Model), http.StatusNotFound)
+				return
+			}
+
+			// Batch process all texts at once
+			allEntities, err = recognizer.RecognizeWithLabels(r.Context(), req.Texts, labels)
+			if err != nil {
+				ln.logger.Error("entity extraction failed",
+					zap.String("model", req.Model),
+					zap.Int("num_texts", len(req.Texts)),
+					zap.Error(err))
+				http.Error(w, fmt.Sprintf("entity extraction failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Get NER model once outside the loop
+			nerModel, err := ln.nerRegistry.Get(req.Model)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 				return
 			}
 
-			output, err := model.ExtractRelations(r.Context(), []string{text})
+			// Batch process all texts at once
+			allEntities, err = nerModel.Recognize(r.Context(), req.Texts)
 			if err != nil {
-				ln.logger.Error("relation extraction failed",
+				ln.logger.Error("entity extraction failed",
+					zap.String("model", req.Model),
+					zap.Int("num_texts", len(req.Texts)),
+					zap.Error(err))
+				http.Error(w, fmt.Sprintf("entity extraction failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Add each text's entities to the builder
+		for i, entities := range allEntities {
+			input := ner.ExtractionInput{
+				DocumentID:     fmt.Sprintf("text_%d", i),
+				Entities:       entities,
+				Relations:      nil, // NER models don't extract relations
+				ExtractorModel: req.Model,
+			}
+			if err := builder.AddExtraction(input); err != nil {
+				ln.logger.Error("failed to add extraction to KG",
 					zap.String("model", req.Model),
 					zap.Int("text_index", i),
 					zap.Error(err))
-				http.Error(w, fmt.Sprintf("relation extraction failed: %v", err), http.StatusInternalServerError)
+				http.Error(w, fmt.Sprintf("failed to build knowledge graph: %v", err), http.StatusInternalServerError)
 				return
 			}
-
-			// Convert REBEL triplets to entities and relations
-			if len(output.Triplets) > 0 {
-				for _, triplet := range output.Triplets[0] {
-					// Create entities from subject and object
-					subjectEntity := ner.Entity{
-						Text:  triplet.Subject,
-						Label: "entity", // REBEL doesn't provide entity types
-						Score: triplet.Score,
-					}
-					objectEntity := ner.Entity{
-						Text:  triplet.Object,
-						Label: "entity",
-						Score: triplet.Score,
-					}
-					entities = append(entities, subjectEntity, objectEntity)
-
-					// Create relation
-					relations = append(relations, ner.Relation{
-						HeadEntity: subjectEntity,
-						TailEntity: objectEntity,
-						Label:      triplet.Relation,
-						Score:      triplet.Score,
-					})
-				}
-			}
-		} else {
-			// Use GLiNER/NER for entity extraction
-			labels := req.EntityLabels
-			if len(labels) == 0 {
-				labels = []string{"person", "organization", "location", "date", "event", "product"}
-			}
-
-			// Try zero-shot recognizer first
-			if ln.nerRegistry.IsRecognizer(req.Model) {
-				recognizer, err := ln.nerRegistry.GetRecognizer(req.Model)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("recognizer not found: %s", req.Model), http.StatusNotFound)
-					return
-				}
-
-				extractedEntities, err := recognizer.RecognizeWithLabels(r.Context(), []string{text}, labels)
-				if err != nil {
-					ln.logger.Error("entity extraction failed",
-						zap.String("model", req.Model),
-						zap.Int("text_index", i),
-						zap.Error(err))
-					http.Error(w, fmt.Sprintf("entity extraction failed: %v", err), http.StatusInternalServerError)
-					return
-				}
-				if len(extractedEntities) > 0 {
-					entities = extractedEntities[0]
-				}
-			} else {
-				// Fall back to standard NER model
-				model, err := ln.nerRegistry.Get(req.Model)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
-					return
-				}
-
-				extractedEntities, err := model.Recognize(r.Context(), []string{text})
-				if err != nil {
-					ln.logger.Error("entity extraction failed",
-						zap.String("model", req.Model),
-						zap.Int("text_index", i),
-						zap.Error(err))
-					http.Error(w, fmt.Sprintf("entity extraction failed: %v", err), http.StatusInternalServerError)
-					return
-				}
-				if len(extractedEntities) > 0 {
-					entities = extractedEntities[0]
-				}
-			}
-
-			// Note: relation extraction for GLiNER would require a separate model
-			// For now, we just extract entities
-		}
-
-		// Add extraction to builder
-		input := ner.ExtractionInput{
-			DocumentID:     fmt.Sprintf("text_%d", i),
-			Entities:       entities,
-			Relations:      relations,
-			ExtractorModel: req.Model,
-		}
-		if err := builder.AddExtraction(input); err != nil {
-			ln.logger.Error("failed to add extraction to KG",
-				zap.Int("text_index", i),
-				zap.Error(err))
 		}
 	}
 

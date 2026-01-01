@@ -576,6 +576,38 @@ func (kg *KnowledgeGraph) RemoveEdge(id string) error {
 	return kg.removeEdgeUnsafe(id)
 }
 
+// UpdateEdge updates an existing edge
+func (kg *KnowledgeGraph) UpdateEdge(edge *KGEdge) error {
+	if edge == nil {
+		return fmt.Errorf("edge cannot be nil")
+	}
+
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+
+	existing, exists := kg.edges[edge.ID]
+	if !exists {
+		return fmt.Errorf("edge with ID %s not found", edge.ID)
+	}
+
+	// Remove old indexes
+	kg.unindexEdge(existing)
+
+	// Update timestamp
+	edge.UpdatedAt = time.Now()
+	edge.CreatedAt = existing.CreatedAt // Preserve creation time
+
+	// Store updated edge
+	kg.edges[edge.ID] = edge
+
+	// Add new indexes
+	kg.indexEdge(edge)
+
+	kg.metadata.UpdatedAt = edge.UpdatedAt
+
+	return nil
+}
+
 // removeEdgeUnsafe removes an edge without locking (must hold lock)
 func (kg *KnowledgeGraph) removeEdgeUnsafe(id string) error {
 	edge, exists := kg.edges[id]
@@ -803,20 +835,30 @@ func FromJSON(data []byte) (*KnowledgeGraph, error) {
 	}
 
 	kg := NewKnowledgeGraph()
-	kg.metadata = export.Metadata
 
-	// Add nodes first
+	// Add nodes first (AddNode will update NodeCount)
 	for _, node := range export.Nodes {
 		if err := kg.AddNode(node); err != nil {
 			return nil, fmt.Errorf("adding node %s: %w", node.ID, err)
 		}
 	}
 
-	// Then add edges
+	// Then add edges (AddEdge will update EdgeCount)
 	for _, edge := range export.Edges {
 		if err := kg.AddEdge(edge); err != nil {
 			return nil, fmt.Errorf("adding edge %s: %w", edge.ID, err)
 		}
+	}
+
+	// Restore metadata fields that aren't calculated by AddNode/AddEdge
+	// NodeCount and EdgeCount are already set correctly by the Add* methods
+	kg.metadata.Name = export.Metadata.Name
+	kg.metadata.Description = export.Metadata.Description
+	kg.metadata.DocumentCount = export.Metadata.DocumentCount
+	kg.metadata.DocumentIDs = export.Metadata.DocumentIDs
+	// Preserve original timestamps if they were set
+	if !export.Metadata.CreatedAt.IsZero() {
+		kg.metadata.CreatedAt = export.Metadata.CreatedAt
 	}
 
 	return kg, nil
