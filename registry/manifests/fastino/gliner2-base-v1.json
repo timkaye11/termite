@@ -43,9 +43,8 @@
     }
   ],
   "capabilities": [
-    "ner",
-    "classification",
-    "structured",
+    "labels",
+    "zeroshot",
     "relations"
   ],
   "backends": [

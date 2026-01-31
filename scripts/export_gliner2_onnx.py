@@ -208,6 +208,224 @@ class GLiNER2EntityWrapper(nn.Module):
         return logits
 
 
+class GLiNER2MultiTaskWrapper(nn.Module):
+    """
+    ONNX-exportable wrapper for GLiNER2 multi-task extraction.
+
+    This wrapper supports all GLiNER2 tasks:
+    - NER: Standard entity extraction
+    - Relations: Composite label format (entity_type::relation)
+    - Classification: Single span covering entire text
+
+    The key insight is that GLiNER2 uses the same span-based architecture
+    for all tasks, with different label encodings:
+    - NER: <<ENT>>label<<SEP>>
+    - Relations: <<REL>>entity::relation<<SEP>> (composite labels)
+    - Classification: <<CLS>>label<<SEP>>
+
+    Inputs:
+        - input_ids: [batch, seq_len] - Token IDs with labels prepended
+        - attention_mask: [batch, seq_len] - Attention mask
+        - words_mask: [batch, seq_len] - Word boundary tracking
+        - text_lengths: [batch, 1] - Number of text tokens
+        - span_idx: [batch, num_spans, 2] - Span positions
+        - span_mask: [batch, num_spans] - Valid span mask
+        - label_positions: [batch, num_labels] - Positions of label tokens (optional)
+
+    Outputs:
+        - logits: [batch, num_spans, num_labels] - Span scores per label
+    """
+
+    def __init__(self, gliner2_model, max_width: int = 8, num_labels: int = 1):
+        super().__init__()
+
+        # GLiNER2 model components
+        self.encoder = gliner2_model.encoder
+        self.classifier = gliner2_model.classifier
+
+        # Extract projection layers from span_rep
+        span_layer = gliner2_model.span_rep.span_rep_layer
+        self.project_start = span_layer.project_start
+        self.project_end = span_layer.project_end
+        self.out_project = span_layer.out_project
+
+        self.max_width = max_width
+        self.hidden_size = gliner2_model.hidden_size
+        self.num_labels = num_labels
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        words_mask: torch.Tensor,
+        text_lengths: torch.Tensor,
+        span_idx: torch.Tensor,
+        span_mask: torch.Tensor,
+        num_labels: torch.Tensor,  # [batch] - Number of labels in input
+    ) -> torch.Tensor:
+        """
+        Forward pass for multi-task ONNX export.
+
+        Args:
+            input_ids: Token IDs with format [CLS] [label_tokens] [SEP] [text_tokens] [SEP]
+            attention_mask: Attention mask
+            words_mask: Word boundary tracking (>0 for text tokens)
+            text_lengths: Number of text tokens per batch
+            span_idx: Span positions relative to text start
+            span_mask: Valid span mask
+            num_labels: Number of labels encoded in input
+
+        Returns:
+            logits: [batch, num_spans, 1] Span classification scores
+                    Labels are implicitly encoded in the input tokens
+        """
+        batch_size = input_ids.shape[0]
+        num_spans = span_idx.shape[1]
+
+        # 1. Encode input through DeBERTa
+        encoder_outputs = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        hidden_states = encoder_outputs.last_hidden_state
+
+        # 2. Find text token offset from words_mask
+        text_mask = (words_mask > 0).long()
+        text_start_idx = text_mask.argmax(dim=1, keepdim=True)
+
+        # 3. Adjust span indices from text-relative to absolute positions
+        span_idx_offset = text_start_idx.unsqueeze(-1).expand(-1, num_spans, 2)
+        span_idx_abs = span_idx + span_idx_offset
+
+        # 4. Clamp indices to valid range
+        seq_len = hidden_states.shape[1]
+        span_idx_abs = span_idx_abs.clamp(0, seq_len - 1)
+
+        # 5. Project hidden states
+        start_rep = self.project_start(hidden_states)
+        end_rep = self.project_end(hidden_states)
+
+        # 6. Gather span representations
+        start_indices = span_idx_abs[:, :, 0].unsqueeze(-1).expand(-1, -1, self.hidden_size)
+        end_indices = span_idx_abs[:, :, 1].unsqueeze(-1).expand(-1, -1, self.hidden_size)
+
+        start_span_rep = torch.gather(start_rep, 1, start_indices)
+        end_span_rep = torch.gather(end_rep, 1, end_indices)
+
+        # 7. Combine and project
+        cat = torch.cat([start_span_rep, end_span_rep], dim=-1).relu()
+        span_reps = self.out_project(cat)
+
+        # 8. Classify spans
+        logits = self.classifier(span_reps)
+
+        return logits
+
+
+class GLiNER2ClassificationWrapper(nn.Module):
+    """
+    ONNX-exportable wrapper for GLiNER2 text classification.
+
+    Classification is implemented as span classification where the
+    entire text is treated as a single span and scored against class labels.
+
+    Inputs:
+        - input_ids: [batch, seq_len] - Token IDs
+        - attention_mask: [batch, seq_len] - Attention mask
+
+    Outputs:
+        - class_logits: [batch, num_classes] - Classification scores
+    """
+
+    def __init__(self, gliner2_model, num_classes: int = 1):
+        super().__init__()
+
+        self.encoder = gliner2_model.encoder
+        self.classifier = gliner2_model.classifier
+        self.hidden_size = gliner2_model.hidden_size
+
+        # For classification, we pool the text representation
+        # GLiNER2 might use different pooling strategies
+        if hasattr(gliner2_model, 'cls_head'):
+            self.cls_head = gliner2_model.cls_head
+        else:
+            self.cls_head = None
+
+        # Extract span projection layers
+        span_layer = gliner2_model.span_rep.span_rep_layer
+        self.project_start = span_layer.project_start
+        self.project_end = span_layer.project_end
+        self.out_project = span_layer.out_project
+
+        self.num_classes = num_classes
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        words_mask: torch.Tensor,
+        num_classes: torch.Tensor,  # [batch] - Number of classes
+    ) -> torch.Tensor:
+        """
+        Forward pass for classification.
+
+        For classification, we:
+        1. Encode the input (with class labels prepended)
+        2. Create a single span covering the entire text
+        3. Score that span against each class label
+
+        Args:
+            input_ids: Token IDs with format [CLS] [class_label_tokens] [SEP] [text_tokens] [SEP]
+            attention_mask: Attention mask
+            words_mask: Word boundary tracking
+            num_classes: Number of class labels
+
+        Returns:
+            class_logits: [batch, 1] - Classification score
+                          (one score per class label encoded in input)
+        """
+        batch_size = input_ids.shape[0]
+
+        # 1. Encode input
+        encoder_outputs = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        hidden_states = encoder_outputs.last_hidden_state
+
+        # 2. Find text boundaries from words_mask
+        text_mask = (words_mask > 0).long()
+        # Find first and last text token positions
+        text_start_idx = text_mask.argmax(dim=1)  # [batch]
+
+        # Find last text token by reversing and finding first
+        seq_len = hidden_states.shape[1]
+        reversed_mask = text_mask.flip(dims=[1])
+        last_pos_reversed = reversed_mask.argmax(dim=1)
+        text_end_idx = seq_len - 1 - last_pos_reversed  # [batch]
+
+        # 3. Create single span covering entire text
+        start_indices = text_start_idx.unsqueeze(-1).expand(-1, self.hidden_size)
+        end_indices = text_end_idx.unsqueeze(-1).expand(-1, self.hidden_size)
+
+        # 4. Project and gather span representations
+        start_rep = self.project_start(hidden_states)
+        end_rep = self.project_end(hidden_states)
+
+        # Gather at span boundaries
+        start_span_rep = torch.gather(start_rep, 1, start_indices.unsqueeze(1)).squeeze(1)
+        end_span_rep = torch.gather(end_rep, 1, end_indices.unsqueeze(1)).squeeze(1)
+
+        # 5. Combine and project
+        cat = torch.cat([start_span_rep, end_span_rep], dim=-1).relu()
+        span_rep = self.out_project(cat)  # [batch, hidden_size]
+
+        # 6. Classify
+        logits = self.classifier(span_rep.unsqueeze(1))  # [batch, 1, 1]
+
+        return logits.squeeze(-1)  # [batch, 1]
+
+
 def analyze_gliner2_model(model_id: str) -> Tuple[Dict[str, Any], Any]:
     """
     Analyze a GLiNER2 model to understand its architecture.
@@ -539,7 +757,32 @@ def save_gliner_config(model_id: str, max_width: int, max_seq_len: int, output_d
         "multi_label": False,
         "model_type": "gliner2",
         "model_id": model_id,
-        "capabilities": ["ner", "classification", "structured", "relations"],
+        "capabilities": ["ner", "zeroshot", "classification", "relations"],
+        # Task-specific configuration
+        "tasks": {
+            "ner": {
+                "model_file": "model.onnx",
+                "threshold": 0.5,
+                "flat_ner": True,
+                "prompt_format": "<<ENT>>{label}<<SEP>>",
+            },
+            "relations": {
+                "model_file": "model.onnx",
+                "threshold": 0.3,
+                "default_entity_labels": ["person", "organization", "location"],
+                "default_relation_labels": ["works_for", "located_in", "founded"],
+                "prompt_format": "<<REL>>{entity}::{relation}<<SEP>>",
+            },
+            "classification": {
+                "model_file": "model.onnx",
+                "threshold": 0.5,
+                "multi_label": True,
+                "prompt_format": "<<CLS>>{label}<<SEP>>",
+            },
+        },
+        # Relation extraction configuration
+        "relation_labels": ["works_for", "located_in", "founded", "part_of", "affiliated_with"],
+        "relation_threshold": 0.3,
     }
 
     config_path = output_dir / "gliner_config.json"

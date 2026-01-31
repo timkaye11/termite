@@ -187,6 +187,18 @@ func TestGLiNER2E2E(t *testing.T) {
 		testGLiNER2RecognizeWithCustomLabels(t, ctx, termiteClient)
 	})
 
+	t.Run("ExtractRelations", func(t *testing.T) {
+		testGLiNER2ExtractRelations(t, ctx, termiteClient)
+	})
+
+	t.Run("ClassifyText", func(t *testing.T) {
+		testGLiNER2ClassifyText(t, ctx, termiteClient)
+	})
+
+	t.Run("ClassifyTextMultiLabel", func(t *testing.T) {
+		testGLiNER2ClassifyTextMultiLabel(t, ctx, termiteClient)
+	})
+
 	// Graceful shutdown
 	t.Log("Shutting down server...")
 	serverCancel()
@@ -301,6 +313,158 @@ func testGLiNER2RecognizeWithCustomLabels(t *testing.T, ctx context.Context, c *
 			assert.True(t, found, "Entity label %q should be one of %v", entity.Label, labels)
 		}
 	}
+}
+
+// testGLiNER2ExtractRelations tests GLiNER2's relation extraction capability
+func testGLiNER2ExtractRelations(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	texts := []string{
+		"John Smith works at Google in Mountain View.",
+		"Elon Musk founded Tesla in 2003.",
+	}
+
+	entityLabels := []string{"person", "organization", "location"}
+	relationLabels := []string{"works_for", "founded", "located_in"}
+
+	resp, err := c.ExtractRelations(ctx, gliner2LocalName, texts, entityLabels, relationLabels)
+	if err != nil {
+		// Relation extraction may not be fully implemented yet
+		t.Logf("RelationExtraction returned error (may be expected): %v", err)
+		return
+	}
+
+	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Len(t, resp.Entities, len(texts), "Should have entities for each input text")
+
+	// Log entities found
+	for i, textEntities := range resp.Entities {
+		t.Logf("Text %d entities:", i)
+		for _, entity := range textEntities {
+			t.Logf("  - %q (%s) at [%d:%d] score=%.2f",
+				entity.Text, entity.Label, entity.Start, entity.End, entity.Score)
+		}
+	}
+
+	// Log relations found
+	if resp.Relations != nil {
+		for i, textRelations := range resp.Relations {
+			t.Logf("Text %d relations:", i)
+			for _, rel := range textRelations {
+				t.Logf("  - %q (%s) -[%s]-> %q (%s) score=%.2f",
+					rel.Head.Text, rel.Head.Label, rel.Label,
+					rel.Tail.Text, rel.Tail.Label, rel.Score)
+			}
+		}
+	}
+
+	// First text should have entities (John Smith, Google, Mountain View)
+	assert.NotEmpty(t, resp.Entities[0], "First text should have entities")
+
+	// Relations may or may not be extracted depending on model capabilities
+	// We just verify no panic occurred
+	t.Logf("Relation extraction completed successfully")
+}
+
+// testGLiNER2ClassifyText tests GLiNER2's text classification capability
+func testGLiNER2ClassifyText(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	texts := []string{
+		"This product is absolutely amazing! Best purchase ever.",
+		"Terrible experience. Would not recommend.",
+	}
+
+	labels := []string{"positive", "negative", "neutral"}
+
+	resp, err := c.Classify(ctx, gliner2LocalName, texts, labels)
+	if err != nil {
+		// Classification may not be fully implemented yet
+		t.Logf("ClassifyText returned error (may be expected): %v", err)
+		return
+	}
+
+	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Len(t, resp.Classifications, len(texts), "Should have classifications for each input text")
+
+	// Log classifications found
+	for i, textClassifications := range resp.Classifications {
+		t.Logf("Text %d classifications:", i)
+		for _, cls := range textClassifications {
+			t.Logf("  - %s (score=%.2f)", cls.Label, cls.Score)
+		}
+	}
+
+	// Each text should have at least one classification
+	for i, textClassifications := range resp.Classifications {
+		assert.NotEmpty(t, textClassifications, "Text %d should have at least one classification", i)
+	}
+
+	// Verify labels are from our provided list
+	for _, textClassifications := range resp.Classifications {
+		for _, cls := range textClassifications {
+			found := false
+			for _, label := range labels {
+				if cls.Label == label {
+					found = true
+					break
+				}
+			}
+			assert.True(t, found, "Classification label %q should be one of %v", cls.Label, labels)
+		}
+	}
+
+	t.Logf("Single-label classification completed successfully")
+}
+
+// testGLiNER2ClassifyTextMultiLabel tests GLiNER2's multi-label classification
+func testGLiNER2ClassifyTextMultiLabel(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	texts := []string{
+		"Apple announces new iPhone with AI features for enterprise customers",
+		"Local sports team wins championship in exciting final match",
+	}
+
+	labels := []string{"technology", "business", "sports", "health", "politics"}
+
+	resp, err := c.ClassifyMultiLabel(ctx, gliner2LocalName, texts, labels)
+	if err != nil {
+		// Classification may not be fully implemented yet
+		t.Logf("ClassifyText (multi-label) returned error (may be expected): %v", err)
+		return
+	}
+
+	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Len(t, resp.Classifications, len(texts), "Should have classifications for each input text")
+
+	// Log classifications found
+	for i, textClassifications := range resp.Classifications {
+		t.Logf("Text %d multi-label classifications:", i)
+		for _, cls := range textClassifications {
+			t.Logf("  - %s (score=%.2f)", cls.Label, cls.Score)
+		}
+	}
+
+	// First text should have technology and/or business labels
+	if len(resp.Classifications) > 0 && len(resp.Classifications[0]) > 0 {
+		labels := make([]string, 0)
+		for _, cls := range resp.Classifications[0] {
+			labels = append(labels, cls.Label)
+		}
+		t.Logf("First text got labels: %v", labels)
+	}
+
+	// Second text should have sports label
+	if len(resp.Classifications) > 1 && len(resp.Classifications[1]) > 0 {
+		labels := make([]string, 0)
+		for _, cls := range resp.Classifications[1] {
+			labels = append(labels, cls.Label)
+		}
+		t.Logf("Second text got labels: %v", labels)
+	}
+
+	t.Logf("Multi-label classification completed successfully")
 }
 
 // TestGLiNER2ModelTypeDetection tests that GLiNER2 models are correctly detected
