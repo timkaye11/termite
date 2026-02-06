@@ -1696,6 +1696,95 @@ func LoadGLiNERPipeline(
 }
 
 // ============================================================================
+// JSON Extraction Support
+// ============================================================================
+
+// GLiNERExtractedSpan represents a span extracted for JSON extraction.
+type GLiNERExtractedSpan struct {
+	// Text is the extracted span text
+	Text string
+	// Label is the field label this span was extracted for
+	Label string
+	// Start is the character offset where the span begins
+	Start int
+	// End is the character offset where the span ends (exclusive)
+	End int
+	// Score is the confidence score (0.0 to 1.0)
+	Score float32
+}
+
+// ExtractSpansForLabels extracts entity spans using the given labels and threshold.
+// This is a thin wrapper around processText for use by JSON extraction.
+func (p *GLiNERPipeline) ExtractSpansForLabels(
+	ctx context.Context,
+	text string,
+	labels []string,
+	threshold float32,
+	flatNER bool,
+) ([]GLiNERExtractedSpan, error) {
+	if text == "" || len(labels) == 0 {
+		return nil, nil
+	}
+
+	// Temporarily override pipeline config for this extraction
+	origThreshold := p.PipelineConfig.Threshold
+	origFlatNER := p.PipelineConfig.FlatNER
+	p.PipelineConfig.Threshold = threshold
+	p.PipelineConfig.FlatNER = flatNER
+	defer func() {
+		p.PipelineConfig.Threshold = origThreshold
+		p.PipelineConfig.FlatNER = origFlatNER
+	}()
+
+	entities, err := p.processText(ctx, text, labels)
+	if err != nil {
+		return nil, err
+	}
+
+	spans := make([]GLiNERExtractedSpan, len(entities))
+	for i, e := range entities {
+		spans[i] = GLiNERExtractedSpan{
+			Text:  e.Text,
+			Label: e.Label,
+			Start: e.Start,
+			End:   e.End,
+			Score: e.Score,
+		}
+	}
+	return spans, nil
+}
+
+// ClassifySpanText classifies a span of text against a set of choices.
+// Uses the GLiNER2 classification prompt format.
+// Returns the best matching choice and its score.
+func (p *GLiNERPipeline) ClassifySpanText(
+	ctx context.Context,
+	spanText string,
+	choices []string,
+) (string, float32, error) {
+	if spanText == "" || len(choices) == 0 {
+		return "", 0, nil
+	}
+
+	config := &GLiNER2ClassificationConfig{
+		Threshold:  0.0, // Accept any score
+		MultiLabel: false,
+		TopK:       1,
+	}
+
+	classifications, err := p.classifySingleText(ctx, spanText, choices, config)
+	if err != nil {
+		return "", 0, err
+	}
+
+	if len(classifications) == 0 {
+		return choices[0], 0, nil // Default to first choice
+	}
+
+	return classifications[0].Label, classifications[0].Score, nil
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

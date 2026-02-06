@@ -572,6 +572,54 @@ func (c *TermiteClient) Transcribe(ctx context.Context, model string, audio []by
 	return resp.JSON200, nil
 }
 
+// ExtractJSONConfig contains configuration for JSON extraction.
+type ExtractJSONConfig struct {
+	Threshold         float32
+	FlatNER           bool
+	IncludeConfidence bool
+	IncludeSpans      bool
+}
+
+// ExtractJSON extracts structured JSON from text using a GLiNER2 model.
+// The schema maps structure names to field definitions (e.g., {"person": ["name::str", "age::str"]}).
+func (c *TermiteClient) ExtractJSON(ctx context.Context, model string, texts []string, schema map[string][]string, config *ExtractJSONConfig) (*oapi.ExtractResponse, error) {
+	req := oapi.ExtractRequest{
+		Model:  model,
+		Texts:  texts,
+		Schema: schema,
+	}
+
+	if config != nil {
+		req.Threshold = config.Threshold
+		req.FlatNer = config.FlatNER
+		req.IncludeConfidence = config.IncludeConfidence
+		req.IncludeSpans = config.IncludeSpans
+	}
+
+	resp, err := c.client.ExtractJSONWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
 // GenerateConfig contains configuration for text generation.
 type GenerateConfig struct {
 	MaxTokens   int

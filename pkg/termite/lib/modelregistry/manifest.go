@@ -66,6 +66,10 @@ const (
 	// CapabilityAnswers indicates the model supports extractive question answering
 	// (e.g., GLiNER multitask models)
 	CapabilityAnswers = "answers"
+
+	// CapabilityJSONExtraction indicates the model supports structured JSON extraction
+	// (e.g., GLiNER2 models)
+	CapabilityJSONExtraction = "json_extraction"
 )
 
 // ParseModelType parses a string into a ModelType
