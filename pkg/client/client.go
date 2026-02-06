@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -575,7 +576,7 @@ func (c *TermiteClient) Transcribe(ctx context.Context, model string, audio []by
 // ExtractJSONConfig contains configuration for JSON extraction.
 type ExtractJSONConfig struct {
 	Threshold         float32
-	FlatNER           bool
+	FlatNER           *bool // Pointer so explicit false can be sent (server defaults to true)
 	IncludeConfidence bool
 	IncludeSpans      bool
 }
@@ -583,7 +584,19 @@ type ExtractJSONConfig struct {
 // ExtractJSON extracts structured JSON from text using a GLiNER2 model.
 // The schema maps structure names to field definitions (e.g., {"person": ["name::str", "age::str"]}).
 func (c *TermiteClient) ExtractJSON(ctx context.Context, model string, texts []string, schema map[string][]string, config *ExtractJSONConfig) (*oapi.ExtractResponse, error) {
-	req := oapi.ExtractRequest{
+	// Build request body manually instead of using the generated ExtractRequest type,
+	// because the generated type's omitzero tag on FlatNer (bool) silently drops false.
+	type extractReqBody struct {
+		Model             string              `json:"model"`
+		Texts             []string            `json:"texts"`
+		Schema            map[string][]string `json:"schema"`
+		Threshold         float32             `json:"threshold,omitempty"`
+		FlatNER           *bool               `json:"flat_ner,omitempty"`
+		IncludeConfidence bool                `json:"include_confidence,omitempty"`
+		IncludeSpans      bool                `json:"include_spans,omitempty"`
+	}
+
+	req := extractReqBody{
 		Model:  model,
 		Texts:  texts,
 		Schema: schema,
@@ -591,12 +604,17 @@ func (c *TermiteClient) ExtractJSON(ctx context.Context, model string, texts []s
 
 	if config != nil {
 		req.Threshold = config.Threshold
-		req.FlatNer = config.FlatNER
+		req.FlatNER = config.FlatNER
 		req.IncludeConfidence = config.IncludeConfidence
 		req.IncludeSpans = config.IncludeSpans
 	}
 
-	resp, err := c.client.ExtractJSONWithResponse(ctx, req)
+	buf, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	resp, err := c.client.ExtractJSONWithBodyWithResponse(ctx, "application/json", bytes.NewReader(buf))
 	if err != nil {
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
