@@ -440,6 +440,12 @@ func (p *GLiNERPipeline) RecognizeWithLabels(ctx context.Context, texts []string
 
 // processText processes a single text with the given labels.
 func (p *GLiNERPipeline) processText(ctx context.Context, text string, labels []string) ([]GLiNEREntity, error) {
+	return p.processTextWithConfig(ctx, text, labels, p.PipelineConfig.Threshold, p.PipelineConfig.FlatNER)
+}
+
+// processTextWithConfig runs NER extraction with explicit threshold and flatNER parameters,
+// avoiding mutation of shared PipelineConfig state for thread safety.
+func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string, labels []string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
 	if text == "" {
 		return nil, nil
 	}
@@ -471,7 +477,7 @@ func (p *GLiNERPipeline) processText(ctx context.Context, text string, labels []
 	}
 
 	// Parse outputs to extract entities
-	entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, labels, text)
+	entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, labels, text, threshold, flatNER)
 	if err != nil {
 		return nil, fmt.Errorf("parsing outputs: %w", err)
 	}
@@ -1148,7 +1154,7 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 }
 
 // parseOutputs extracts entities from model outputs.
-func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string) ([]GLiNEREntity, error) {
+func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
 	// Find the logits output
 	var logits []float32
 	var logitsShape []int64
@@ -1216,7 +1222,6 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	// - Second index is the span width index (0 = width 1, 1 = width 2, etc.)
 	// We need to map token positions back to word positions for entity extraction
 	var entities []GLiNEREntity
-	threshold := p.PipelineConfig.Threshold
 
 	// For now, use word-based iteration since we need word boundaries for entity text
 	// The logits are indexed by word position (after the prompt), not raw token position
@@ -1268,7 +1273,7 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	}
 
 	// Apply flat NER (remove overlapping entities) if enabled
-	if p.PipelineConfig.FlatNER && len(entities) > 1 {
+	if flatNER && len(entities) > 1 {
 		entities = p.removeOverlappingEntities(entities)
 	}
 
@@ -1726,17 +1731,7 @@ func (p *GLiNERPipeline) ExtractSpansForLabels(
 		return nil, nil
 	}
 
-	// Temporarily override pipeline config for this extraction
-	origThreshold := p.PipelineConfig.Threshold
-	origFlatNER := p.PipelineConfig.FlatNER
-	p.PipelineConfig.Threshold = threshold
-	p.PipelineConfig.FlatNER = flatNER
-	defer func() {
-		p.PipelineConfig.Threshold = origThreshold
-		p.PipelineConfig.FlatNER = origFlatNER
-	}()
-
-	entities, err := p.processText(ctx, text, labels)
+	entities, err := p.processTextWithConfig(ctx, text, labels, threshold, flatNER)
 	if err != nil {
 		return nil, err
 	}

@@ -409,13 +409,13 @@ func testGLiNER2ExtractJSON(t *testing.T, ctx context.Context, c *client.Termite
 		"person": {"name::str", "age::str", "company::str"},
 	}
 
-	resp, err := c.ExtractJSON(ctx, gliner2LocalName, texts, schema, nil)
+	resp, err := c.ExtractJSON(ctx, gliner2ModelName, texts, schema, nil)
 	if err != nil {
 		t.Logf("ExtractJSON returned error (may be expected): %v", err)
 		return
 	}
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Results, len(texts), "Should have results for each input text")
 
 	// Log extraction results
@@ -458,13 +458,13 @@ func testGLiNER2ExtractJSONMultipleInstances(t *testing.T, ctx context.Context, 
 		"person": {"name::str", "age::str", "company::str"},
 	}
 
-	resp, err := c.ExtractJSON(ctx, gliner2LocalName, texts, schema, nil)
+	resp, err := c.ExtractJSON(ctx, gliner2ModelName, texts, schema, nil)
 	if err != nil {
 		t.Logf("ExtractJSON returned error (may be expected): %v", err)
 		return
 	}
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Results, len(texts))
 
 	// Log extraction results
@@ -501,13 +501,13 @@ func testGLiNER2ExtractJSONChoiceFields(t *testing.T, ctx context.Context, c *cl
 		IncludeConfidence: true,
 	}
 
-	resp, err := c.ExtractJSON(ctx, gliner2LocalName, texts, schema, config)
+	resp, err := c.ExtractJSON(ctx, gliner2ModelName, texts, schema, config)
 	if err != nil {
 		t.Logf("ExtractJSON with choice fields returned error (may be expected): %v", err)
 		return
 	}
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Results, len(texts))
 
 	// Log extraction results
