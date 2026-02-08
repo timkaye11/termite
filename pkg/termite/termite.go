@@ -25,6 +25,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	mediachunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"go.uber.org/zap"
 )
 
@@ -33,26 +34,21 @@ type TermiteNode struct {
 
 	client *http.Client
 
-	// Embedder registry (lazy loading with TTL-based unloading)
-	embedderRegistry *EmbedderRegistry
-
-	cachedChunker         *CachedChunker
+	embedderRegistry      EmbedderRegistryInterface
+	readerRegistry        ReaderRegistryInterface
+	transcriberRegistry   TranscriberRegistryInterface
+	chunker               ChunkerInterface
+	mediaChunker          *mediachunking.FixedMediaChunker
 	rerankerRegistry      RerankerRegistryInterface
-	generatorRegistry     *GeneratorRegistry
+	generatorRegistry     GeneratorRegistryInterface
 	nerRegistry           NERRegistryInterface
-	seq2seqRegistry       *Seq2SeqRegistry
-	classifierRegistry    *ClassifierRegistry
+	seq2seqRegistry       Seq2SeqRegistryInterface
+	classifierRegistry    ClassifierRegistryInterface
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
 	// Request queue for backpressure control
 	requestQueue *RequestQueue
-
-	// Reader registry (lazy loading with TTL-based unloading)
-	readerRegistry *ReaderRegistry
-
-	// Transcriber registry (lazy loading with TTL-based unloading)
-	transcriberRegistry *TranscriberRegistry
 
 	// Caches for embeddings, reranking, NER, and reading
 	embeddingCache *EmbeddingCache
@@ -501,7 +497,8 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		logger: zl,
 
 		embedderRegistry:      embedderRegistry,
-		cachedChunker:         cachedChunker,
+		chunker:               cachedChunker,
+		mediaChunker:          mediachunking.NewFixedMediaChunker(),
 		rerankerRegistry:      rerankerRegistry,
 		generatorRegistry:     generatorRegistry,
 		nerRegistry:           nerRegistry,

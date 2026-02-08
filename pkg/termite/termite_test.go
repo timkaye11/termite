@@ -21,12 +21,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -136,12 +138,14 @@ type MockRerankerRegistry struct {
 	models map[string]reranking.Model
 }
 
-func (m *MockRerankerRegistry) Get(modelName string) (reranking.Model, error) {
+func (m *MockRerankerRegistry) Acquire(modelName string) (reranking.Model, error) {
 	if model, ok := m.models[modelName]; ok {
 		return model, nil
 	}
 	return nil, fmt.Errorf("model not found: %s", modelName)
 }
+
+func (m *MockRerankerRegistry) Release(modelName string) {}
 
 func (m *MockRerankerRegistry) List() []string {
 	names := make([]string, 0, len(m.models))
@@ -391,47 +395,19 @@ func (m *MockNER) GetCallCount() int32 {
 // MockNERRegistry implements NERRegistryInterface for testing
 type MockNERRegistry struct {
 	models       map[string]ner.Model
-	recognizers  map[string]ner.Recognizer
 	capabilities map[string][]string
 }
 
-func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
+func (m *MockNERRegistry) Acquire(modelName string) (ner.Model, error) {
 	if model, ok := m.models[modelName]; ok {
 		return model, nil
 	}
 	return nil, fmt.Errorf("model not found: %s", modelName)
 }
 
-func (m *MockNERRegistry) GetRecognizer(modelName string) (ner.Recognizer, error) {
-	if m.recognizers == nil {
-		return nil, fmt.Errorf("recognizer not found: %s", modelName)
-	}
-	if rec, ok := m.recognizers[modelName]; ok {
-		return rec, nil
-	}
-	return nil, fmt.Errorf("recognizer not found: %s", modelName)
-}
+func (m *MockNERRegistry) Release(modelName string) {}
 
-func (m *MockNERRegistry) List() []string {
-	names := make([]string, 0, len(m.models))
-	for name := range m.models {
-		names = append(names, name)
-	}
-	return names
-}
-
-func (m *MockNERRegistry) ListRecognizers() []string {
-	if m.recognizers == nil {
-		return nil
-	}
-	names := make([]string, 0, len(m.recognizers))
-	for name := range m.recognizers {
-		names = append(names, name)
-	}
-	return names
-}
-
-func (m *MockNERRegistry) ListWithCapabilities() map[string][]string {
+func (m *MockNERRegistry) List() map[string][]string {
 	if m.capabilities != nil {
 		return m.capabilities
 	}
@@ -442,7 +418,7 @@ func (m *MockNERRegistry) ListWithCapabilities() map[string][]string {
 	return result
 }
 
-func (m *MockNERRegistry) HasCapability(modelName, capability string) bool {
+func (m *MockNERRegistry) HasCapability(modelName string, capability modelregistry.Capability) bool {
 	if m.capabilities == nil {
 		return false
 	}
@@ -450,36 +426,15 @@ func (m *MockNERRegistry) HasCapability(modelName, capability string) bool {
 	if !ok {
 		return false
 	}
-	for _, c := range caps {
-		if c == capability {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *MockNERRegistry) IsRecognizer(modelName string) bool {
-	if m.recognizers == nil {
-		return false
-	}
-	_, ok := m.recognizers[modelName]
-	return ok
+	return slices.Contains(caps, string(capability))
 }
 
 func (m *MockNERRegistry) Close() error {
 	return nil
 }
 
-func (m *MockNERRegistry) GetClassifier(modelName string) (ner.Classifier, error) {
-	return nil, fmt.Errorf("classifier not found: %s", modelName)
-}
-
-func (m *MockNERRegistry) ListClassificationCapable() []string {
-	return nil
-}
-
-func (m *MockNERRegistry) SupportsClassification(modelName string) bool {
-	return false
+func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
+	return m.Acquire(modelName)
 }
 
 func (m *MockNERRegistry) GetJSONExtractor(modelName string) (ner.JSONExtractor, error) {
@@ -493,6 +448,7 @@ func (m *MockNERRegistry) SupportsJSONExtraction(modelName string) bool {
 func (m *MockNERRegistry) ListJSONExtractionCapable() []string {
 	return nil
 }
+
 
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)

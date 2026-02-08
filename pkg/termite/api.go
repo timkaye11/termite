@@ -31,15 +31,18 @@ import (
 	_ "image/png"
 	"net/http"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
+	"github.com/antflydb/antfly-go/libaf/chunking"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 	"go.uber.org/zap"
@@ -131,8 +134,8 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Transcribers: []string{},
 	}
 
-	if t.node.cachedChunker != nil {
-		resp.Chunkers = t.node.cachedChunker.ListModels()
+	if t.node.chunker != nil {
+		resp.Chunkers = t.node.chunker.ListModels()
 	}
 
 	if t.node.embedderRegistry != nil {
@@ -148,10 +151,13 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if t.node.nerRegistry != nil {
-		resp.Recognizers = t.node.nerRegistry.List()
+		capsMap := t.node.nerRegistry.List()
+		// Extract model names from capabilities map
+		resp.Recognizers = make([]string, 0, len(capsMap))
+		for name := range capsMap {
+			resp.Recognizers = append(resp.Recognizers, name)
+		}
 		resp.Extractors = t.node.nerRegistry.ListJSONExtractionCapable()
-		// Populate recognizer info with capabilities
-		capsMap := t.node.nerRegistry.ListWithCapabilities()
 		if len(capsMap) > 0 {
 			resp.RecognizerInfo = make(map[string]RecognizerModelInfo, len(capsMap))
 			for name, caps := range capsMap {
@@ -253,12 +259,13 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get embedder from provider (lazy loads if needed)
-	embedder, err := ln.embedderRegistry.Get(req.Model)
+	// Acquire embedder (increments ref count to prevent eviction during request)
+	embedder, err := ln.embedderRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.embedderRegistry.Release(req.Model)
 
 	// Parse input - supports text strings, arrays, and multimodal content parts
 	// Uses scraping package for URL downloads with security config and S3 credentials
@@ -375,6 +382,15 @@ func parseEmbedInput(
 				continue
 			}
 
+			// Try inline media content - check Type field
+			if mediaPart, err := part.AsMediaContentPart(); err == nil && mediaPart.Type == MediaContentPartTypeMedia {
+				contents[i] = []ai.ContentPart{ai.BinaryContent{
+					MIMEType: mediaPart.MimeType,
+					Data:     mediaPart.Data,
+				}}
+				continue
+			}
+
 			return nil, fmt.Errorf("unknown content type at index %d", i)
 		}
 		return contents, nil
@@ -422,7 +438,9 @@ func getMIMETypeList(caps embeddings.EmbedderCapabilities) []string {
 	return types
 }
 
-// handleApiChunk handles text chunking requests
+// handleApiChunk handles text and media chunking requests.
+// Supports both the new 'input' field (string or ContentPart) and the
+// deprecated 'text' field for backward compatibility.
 func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
@@ -452,12 +470,6 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the request
-	if req.Text == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
-		return
-	}
-
 	// Convert ChunkConfig to internal chunkConfig type
 	internalConfig := chunkConfig{
 		Model:         req.Config.Model,
@@ -468,12 +480,90 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		Threshold:     req.Config.Threshold,
 	}
 
-	// Use cached chunker to process the request
-	chunks, cacheHit, err := ln.cachedChunker.Chunk(r.Context(), req.Text, internalConfig)
-	if err != nil {
-		ln.logger.Error("chunking failed", zap.Error(err))
-		http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
-		return
+	mediaOpts := chunking.ChunkOptions{
+		MaxChunks:         req.Config.MaxChunks,
+		WindowDurationMs:  req.Config.WindowDurationMs,
+		OverlapDurationMs: req.Config.OverlapDurationMs,
+	}
+
+	var chunks []chunking.Chunk
+	var cacheHit bool
+
+	// Determine input type: try 'input' first, fall back to deprecated 'text'
+	inputHandled := false
+
+	if req.Input.union != nil {
+		// Try as string (text)
+		if text, err := req.Input.AsChunkRequestInput0(); err == nil && text != "" {
+			chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), text, internalConfig)
+			if err != nil {
+				ln.logger.Error("chunking failed", zap.Error(err))
+				http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
+				return
+			}
+			inputHandled = true
+		}
+
+		// Try as ContentPart
+		if !inputHandled {
+			if part, err := req.Input.AsContentPart(); err == nil {
+				// MediaContentPart — inline binary
+				if mediaPart, err := part.AsMediaContentPart(); err == nil && mediaPart.Type == MediaContentPartTypeMedia {
+					chunks, err = ln.mediaChunker.ChunkMedia(r.Context(), mediaPart.Data, mediaPart.MimeType, mediaOpts)
+					if err != nil {
+						ln.logger.Error("media chunking failed", zap.Error(err))
+						http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
+						return
+					}
+					inputHandled = true
+				}
+
+				// TextContentPart
+				if !inputHandled {
+					if textPart, err := part.AsTextContentPart(); err == nil && textPart.Type == TextContentPartTypeText {
+						chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), textPart.Text, internalConfig)
+						if err != nil {
+							ln.logger.Error("chunking failed", zap.Error(err))
+							http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
+							return
+						}
+						inputHandled = true
+					}
+				}
+
+				// ImageURLContentPart — download then dispatch to media chunker
+				if !inputHandled {
+					if imgPart, err := part.AsImageURLContentPart(); err == nil && imgPart.Type == ImageURLContentPartTypeImageUrl {
+						mimeType, data, err := scraping.DownloadContent(r.Context(), imgPart.ImageUrl.Url, ln.contentSecurityConfig, ln.s3Credentials)
+						if err != nil {
+							http.Error(w, fmt.Sprintf("downloading content: %v", err), http.StatusBadRequest)
+							return
+						}
+						chunks, err = ln.mediaChunker.ChunkMedia(r.Context(), data, mimeType, mediaOpts)
+						if err != nil {
+							ln.logger.Error("media chunking failed", zap.Error(err))
+							http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
+							return
+						}
+						inputHandled = true
+					}
+				}
+			}
+		}
+	}
+
+	// Backward compat: fall back to deprecated 'text' field
+	if !inputHandled {
+		if req.Text == "" {
+			http.Error(w, "input or text is required", http.StatusBadRequest)
+			return
+		}
+		chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), req.Text, internalConfig)
+		if err != nil {
+			ln.logger.Error("chunking failed", zap.Error(err))
+			http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Record metrics
@@ -555,12 +645,13 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get model from registry
-	reranker, err := ln.rerankerRegistry.Get(req.Model)
+	// Acquire model from registry
+	reranker, err := ln.rerankerRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.rerankerRegistry.Release(req.Model)
 
 	// Wrap reranker with caching for deduplicated requests
 	cachedReranker := ln.rerankingCache.WrapReranker(reranker, req.Model)
@@ -664,20 +755,22 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Acquire model from registry
+	model, err := ln.nerRegistry.Acquire(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+	defer ln.nerRegistry.Release(req.Model)
+
 	var entities [][]ner.Entity
 	var relations [][]ner.Relation
 
 	// Check if the model supports relations and we should extract them
-	hasRelationsCap := ln.nerRegistry.HasCapability(req.Model, "relations")
+	hasRelationsCap := ln.nerRegistry.HasCapability(req.Model, modelregistry.CapabilityRelations)
 
 	// Check if this is a Recognizer (zero-shot capable)
-	if ln.nerRegistry.IsRecognizer(req.Model) {
-		recognizer, err := ln.nerRegistry.GetRecognizer(req.Model)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Recognizer not found: %s", req.Model), http.StatusNotFound)
-			return
-		}
-
+	if recognizer, ok := model.(ner.Recognizer); ok {
 		// If model supports relations, use ExtractRelations to get both entities and relations
 		if hasRelationsCap {
 			entities, relations, err = recognizer.ExtractRelations(r.Context(), req.Texts, req.Labels, req.RelationLabels)
@@ -716,14 +809,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		// Get standard NER model from registry
-		model, err := ln.nerRegistry.Get(req.Model)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
-			return
-		}
-
-		// Wrap model with caching for deduplicated requests
+		// Standard NER model - wrap with caching for deduplicated requests
 		cachedModel := ln.nerCache.WrapModel(model, req.Model)
 
 		// Recognize entities (with caching and singleflight deduplication)
@@ -1523,12 +1609,13 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Get model from registry
-	model, err := ln.seq2seqRegistry.Get(req.Model)
+	// Acquire model from registry
+	model, err := ln.seq2seqRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.seq2seqRegistry.Release(req.Model)
 
 	// Generate text
 	output, err := model.Generate(r.Context(), req.Inputs)
@@ -1566,7 +1653,17 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// Check if classification is available (from either classifier registry or NER registry with GLiNER2)
 	hasClassifiers := ln.classifierRegistry != nil && len(ln.classifierRegistry.List()) > 0
-	hasNERClassifiers := ln.nerRegistry != nil && len(ln.nerRegistry.ListClassificationCapable()) > 0
+	hasNERClassifiers := false
+	if ln.nerRegistry != nil {
+		for _, caps := range ln.nerRegistry.List() {
+			if slices.Contains(caps, string(modelregistry.CapabilityClassification)) {
+				hasNERClassifiers = true
+			}
+			if hasNERClassifiers {
+				break
+			}
+		}
+	}
 	if !hasClassifiers && !hasNERClassifiers {
 		http.Error(w, "classification not available: no models configured", http.StatusServiceUnavailable)
 		return
@@ -1617,8 +1714,10 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// First, try to get the model from the classifier registry
 	if ln.classifierRegistry != nil {
-		classifier, err := ln.classifierRegistry.Get(req.Model)
+		classifier, err := ln.classifierRegistry.Acquire(req.Model)
 		if err == nil {
+			defer ln.classifierRegistry.Release(req.Model)
+
 			// Found in classifier registry - use NLI-based classification
 			var classifyResults [][]classification.Classification
 			var classifyErr error
@@ -1677,54 +1776,60 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// Try to get a classifier from NER registry
 	if ln.nerRegistry != nil {
-		classifier, err := ln.nerRegistry.GetClassifier(req.Model)
+		model, err := ln.nerRegistry.Acquire(req.Model)
 		if err == nil {
-			// Found model with classification support
-			config := &ner.ClassificationConfig{
-				MultiLabel: req.MultiLabel,
-				Threshold:  0.0, // Return all scores, let caller filter
-			}
+			defer ln.nerRegistry.Release(req.Model)
 
-			classifyResults, classifyErr := classifier.ClassifyText(r.Context(), req.Texts, req.Labels, config)
-			if classifyErr != nil {
-				ln.logger.Error("classification failed",
-					zap.String("model", req.Model),
-					zap.Int("num_texts", len(req.Texts)),
-					zap.Strings("labels", req.Labels),
-					zap.Error(classifyErr))
-				http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
-				return
-			}
+			// Check if model supports classification
+			classifier, ok := model.(ner.Classifier)
+			if ok {
+				// Found model with classification support
+				config := &ner.ClassificationConfig{
+					MultiLabel: req.MultiLabel,
+					Threshold:  0.0, // Return all scores, let caller filter
+				}
 
-			// Convert ner.Classification to API response format
-			results = make([][]ClassifyResult, len(classifyResults))
-			for i, textResults := range classifyResults {
-				results[i] = make([]ClassifyResult, len(textResults))
-				for j, c := range textResults {
-					results[i][j] = ClassifyResult{
-						Label: c.Label,
-						Score: c.Score,
+				classifyResults, classifyErr := classifier.ClassifyText(r.Context(), req.Texts, req.Labels, config)
+				if classifyErr != nil {
+					ln.logger.Error("classification failed",
+						zap.String("model", req.Model),
+						zap.Int("num_texts", len(req.Texts)),
+						zap.Strings("labels", req.Labels),
+						zap.Error(classifyErr))
+					http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
+					return
+				}
+
+				// Convert ner.Classification to API response format
+				results = make([][]ClassifyResult, len(classifyResults))
+				for i, textResults := range classifyResults {
+					results[i] = make([]ClassifyResult, len(textResults))
+					for j, c := range textResults {
+						results[i][j] = ClassifyResult{
+							Label: c.Label,
+							Score: c.Score,
+						}
 					}
 				}
-			}
 
-			ln.logger.Info("classify request completed",
-				zap.String("model", req.Model),
-				zap.Int("num_texts", len(req.Texts)),
-				zap.Int("num_labels", len(req.Labels)))
+				ln.logger.Info("classify request completed",
+					zap.String("model", req.Model),
+					zap.Int("num_texts", len(req.Texts)),
+					zap.Int("num_labels", len(req.Labels)))
 
-			// Send response
-			resp := ClassifyResponse{
-				Model:           req.Model,
-				Classifications: results,
-			}
+				// Send response
+				resp := ClassifyResponse{
+					Model:           req.Model,
+					Classifications: results,
+				}
 
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				ln.logger.Error("encoding response", zap.Error(err))
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(resp); err != nil {
+					ln.logger.Error("encoding response", zap.Error(err))
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+				return
 			}
-			return
 		}
 	}
 
@@ -1781,12 +1886,13 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get reader model from registry
-	reader, err := ln.readerRegistry.Get(req.Model)
+	// Acquire reader model from registry
+	reader, err := ln.readerRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.readerRegistry.Release(req.Model)
 
 	// Download and decode images
 	images, err := downloadAndDecodeImages(r.Context(), req.Images, ln.contentSecurityConfig, ln.s3Credentials)
@@ -1923,12 +2029,13 @@ func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get transcriber model from registry
-	transcriber, err := ln.transcriberRegistry.Get(req.Model)
+	// Acquire transcriber model from registry
+	transcriber, err := ln.transcriberRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.transcriberRegistry.Release(req.Model)
 
 	// Decode base64 audio data
 	audioData, err := base64.StdEncoding.DecodeString(string(req.Audio))

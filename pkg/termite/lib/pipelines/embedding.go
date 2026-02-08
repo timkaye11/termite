@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gomlx/go-huggingface/tokenizers"
+	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
@@ -588,7 +588,7 @@ func (p *EmbeddingPipeline) Embed(ctx context.Context, texts []string) ([][]floa
 	for i := range allInputIDs {
 		origLen := len(allInputIDs[i])
 		allAttentionMask[i] = make([]int32, maxLen)
-		for j := 0; j < origLen; j++ {
+		for j := range origLen {
 			allAttentionMask[i][j] = 1
 		}
 		// Pad input IDs
@@ -852,16 +852,16 @@ func WithEmbeddingAudioConfig(audioConfig *backends.AudioConfig) EmbeddingLoader
 }
 
 // LoadEmbeddingPipelines loads embedding pipelines from a model directory.
-// Returns text and/or visual pipelines based on what's available.
-// For text-only models, visualPipeline will be nil.
-// For image-only models, textPipeline will be nil.
-// For multimodal models, both will be returned.
+// Returns text, visual, and/or audio pipelines based on what's available.
+// For text-only models, visualPipeline and audioPipeline will be nil.
+// For CLIP models, textPipeline and visualPipeline will be returned.
+// For CLAP models, textPipeline and audioPipeline will be returned.
 func LoadEmbeddingPipelines(
 	modelPath string,
 	sessionManager *backends.SessionManager,
 	modelBackends []string,
 	opts ...EmbeddingLoaderOption,
-) (textPipeline, visualPipeline *EmbeddingPipeline, backendType backends.BackendType, err error) {
+) (textPipeline, visualPipeline, audioPipeline *EmbeddingPipeline, backendType backends.BackendType, err error) {
 	// Apply options
 	loaderCfg := &embeddingLoaderConfig{}
 	for _, opt := range opts {
@@ -871,24 +871,34 @@ func LoadEmbeddingPipelines(
 	// Load model configuration
 	config, err := LoadEmbeddingModelConfig(modelPath)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("loading embedding config: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("loading embedding config: %w", err)
 	}
 
-	if !config.HasTextEncoder() && !config.HasVisualEncoder() {
-		return nil, nil, "", fmt.Errorf("no text or visual encoder found in %s", modelPath)
+	if !config.HasTextEncoder() && !config.HasVisualEncoder() && !config.HasAudioEncoder() {
+		return nil, nil, nil, "", fmt.Errorf("no text, visual, or audio encoder found in %s", modelPath)
 	}
 
 	// Get a loader for the model
 	loader, backendType, err := sessionManager.GetLoaderForModel(modelBackends)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("getting model loader: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("getting model loader: %w", err)
+	}
+
+	// Helper to close already-loaded pipelines on error
+	closePipelines := func() {
+		if textPipeline != nil {
+			textPipeline.Close()
+		}
+		if visualPipeline != nil {
+			visualPipeline.Close()
+		}
 	}
 
 	// Load text encoder pipeline if available
 	if config.HasTextEncoder() {
 		textPipeline, err = loadTextEmbeddingPipeline(modelPath, config, loader, loaderCfg)
 		if err != nil {
-			return nil, nil, "", fmt.Errorf("loading text encoder: %w", err)
+			return nil, nil, nil, "", fmt.Errorf("loading text encoder: %w", err)
 		}
 	}
 
@@ -896,14 +906,21 @@ func LoadEmbeddingPipelines(
 	if config.HasVisualEncoder() {
 		visualPipeline, err = loadVisualEmbeddingPipeline(modelPath, config, loader, loaderCfg)
 		if err != nil {
-			if textPipeline != nil {
-				textPipeline.Close()
-			}
-			return nil, nil, "", fmt.Errorf("loading visual encoder: %w", err)
+			closePipelines()
+			return nil, nil, nil, "", fmt.Errorf("loading visual encoder: %w", err)
 		}
 	}
 
-	return textPipeline, visualPipeline, backendType, nil
+	// Load audio encoder pipeline if available
+	if config.HasAudioEncoder() {
+		audioPipeline, err = loadAudioEmbeddingPipeline(modelPath, config, loader, loaderCfg)
+		if err != nil {
+			closePipelines()
+			return nil, nil, nil, "", fmt.Errorf("loading audio encoder: %w", err)
+		}
+	}
+
+	return textPipeline, visualPipeline, audioPipeline, backendType, nil
 }
 
 // loadTextEmbeddingPipeline loads the text encoder as an EmbeddingPipeline.
@@ -914,7 +931,7 @@ func loadTextEmbeddingPipeline(
 	loaderCfg *embeddingLoaderConfig,
 ) (*EmbeddingPipeline, error) {
 	// Load tokenizer
-	tokenizer, err := LoadTokenizer(modelPath)
+	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading tokenizer: %w", err)
 	}
@@ -931,6 +948,24 @@ func loadTextEmbeddingPipeline(
 		return nil, fmt.Errorf("loading text model: %w", err)
 	}
 
+	// Check for text projection model (e.g., text_projection.onnx for CLIP/CLAP)
+	// This projects from hidden_size (e.g., 768) to projection_dim (e.g., 512)
+	var projector backends.Model
+	projectionFile := FindONNXFile(modelPath, []string{
+		"text_projection.onnx",
+	})
+	if projectionFile != "" {
+		projRelPath, err := filepath.Rel(modelPath, projectionFile)
+		if err != nil {
+			projRelPath = filepath.Base(projectionFile)
+		}
+		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
+		if err != nil {
+			model.Close()
+			return nil, fmt.Errorf("loading text projection: %w", err)
+		}
+	}
+
 	// Build pipeline config
 	pipelineConfig := &EmbeddingPipelineConfig{
 		MaxLength:        FirstNonZero(loaderCfg.maxLength, config.MaxTextLength, 512),
@@ -942,7 +977,9 @@ func loadTextEmbeddingPipeline(
 		pipelineConfig.Pooling = backends.PoolingMean
 	}
 
-	return NewEmbeddingPipeline(model, tokenizer, pipelineConfig), nil
+	pipeline := NewEmbeddingPipeline(model, tokenizer, pipelineConfig)
+	pipeline.Projector = projector
+	return pipeline, nil
 }
 
 // loadVisualEmbeddingPipeline loads the visual encoder as an EmbeddingPipeline.
@@ -1005,61 +1042,6 @@ func loadVisualEmbeddingPipeline(
 	pipeline := NewImageEmbeddingPipeline(model, imageConfig, pipelineConfig)
 	pipeline.Projector = projector
 	return pipeline, nil
-}
-
-// LoadCLAPPipelines loads CLAP embedding pipelines from a model directory.
-// Returns text and/or audio pipelines based on what's available.
-// For text-only models, audioPipeline will be nil.
-// For audio-only models, textPipeline will be nil.
-// For CLAP models, both will be returned.
-func LoadCLAPPipelines(
-	modelPath string,
-	sessionManager *backends.SessionManager,
-	modelBackends []string,
-	opts ...EmbeddingLoaderOption,
-) (textPipeline, audioPipeline *EmbeddingPipeline, backendType backends.BackendType, err error) {
-	// Apply options
-	loaderCfg := &embeddingLoaderConfig{}
-	for _, opt := range opts {
-		opt(loaderCfg)
-	}
-
-	// Load model configuration
-	config, err := LoadEmbeddingModelConfig(modelPath)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("loading embedding config: %w", err)
-	}
-
-	if !config.HasTextEncoder() && !config.HasAudioEncoder() {
-		return nil, nil, "", fmt.Errorf("no text or audio encoder found in %s", modelPath)
-	}
-
-	// Get a loader for the model
-	loader, backendType, err := sessionManager.GetLoaderForModel(modelBackends)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("getting model loader: %w", err)
-	}
-
-	// Load text encoder pipeline if available
-	if config.HasTextEncoder() {
-		textPipeline, err = loadTextEmbeddingPipeline(modelPath, config, loader, loaderCfg)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("loading text encoder: %w", err)
-		}
-	}
-
-	// Load audio encoder pipeline if available
-	if config.HasAudioEncoder() {
-		audioPipeline, err = loadAudioEmbeddingPipeline(modelPath, config, loader, loaderCfg)
-		if err != nil {
-			if textPipeline != nil {
-				textPipeline.Close()
-			}
-			return nil, nil, "", fmt.Errorf("loading audio encoder: %w", err)
-		}
-	}
-
-	return textPipeline, audioPipeline, backendType, nil
 }
 
 // loadAudioEmbeddingPipeline loads the audio encoder as an EmbeddingPipeline.

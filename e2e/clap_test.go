@@ -40,12 +40,12 @@ const (
 	clapEmbeddingDim = 512
 )
 
-// TestCLAPMultimodalE2E tests the full CLAP multimodal embedding pipeline:
+// TestCLAPE2E tests the full CLAP multimodal embedding pipeline:
 // 1. Downloads CLAP model if not present (lazy download)
 // 2. Starts termite server with CLAP model
 // 3. Tests text and audio embedding
 // 4. Verifies cross-modal embedding dimensions match
-func TestCLAPMultimodalE2E(t *testing.T) {
+func TestCLAPE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
@@ -100,23 +100,31 @@ func TestCLAPMultimodalE2E(t *testing.T) {
 
 	// Run test cases
 	t.Run("ListModels", func(t *testing.T) {
-		testCLAPListModels(t, ctx, termiteClient)
+		testListModelsCLAP(t, ctx, termiteClient)
 	})
 
 	t.Run("TextEmbedding", func(t *testing.T) {
-		testCLAPTextEmbedding(t, ctx, termiteClient)
+		testTextEmbeddingCLAP(t, ctx, termiteClient)
 	})
 
 	t.Run("AudioEmbedding", func(t *testing.T) {
-		testCLAPAudioEmbedding(t, ctx, serverURL)
+		testAudioEmbeddingCLAP(t, ctx, serverURL)
 	})
 
 	t.Run("CrossModalSimilarity", func(t *testing.T) {
-		testCLAPCrossModalSimilarity(t, ctx, termiteClient, serverURL)
+		testCrossModalSimilarityCLAP(t, ctx, termiteClient, serverURL)
 	})
 
 	t.Run("DifferentAudiosProduceDifferentEmbeddings", func(t *testing.T) {
 		testDifferentAudiosProduceDifferentEmbeddings(t, ctx, serverURL)
+	})
+
+	t.Run("CrossModalRetrieval", func(t *testing.T) {
+		testCrossModalRetrievalCLAP(t, ctx, termiteClient, serverURL)
+	})
+
+	t.Run("MixedModalityBatch", func(t *testing.T) {
+		testMixedModalityBatchCLAP(t, ctx, serverURL)
 	})
 
 	// Graceful shutdown
@@ -131,8 +139,8 @@ func TestCLAPMultimodalE2E(t *testing.T) {
 	}
 }
 
-// testCLAPListModels verifies the CLAP model appears in the models list
-func testCLAPListModels(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testListModelsCLAP verifies the CLAP model appears in the models list
+func testListModelsCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	models, err := c.ListModels(ctx)
@@ -156,8 +164,8 @@ func testCLAPListModels(t *testing.T, ctx context.Context, c *client.TermiteClie
 	}
 }
 
-// testCLAPTextEmbedding tests embedding text strings with CLAP
-func testCLAPTextEmbedding(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testTextEmbeddingCLAP tests embedding text strings with CLAP
+func testTextEmbeddingCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -184,8 +192,8 @@ func testCLAPTextEmbedding(t *testing.T, ctx context.Context, c *client.TermiteC
 	}
 }
 
-// testCLAPAudioEmbedding tests embedding audio via multimodal ContentPart
-func testCLAPAudioEmbedding(t *testing.T, ctx context.Context, serverURL string) {
+// testAudioEmbeddingCLAP tests embedding audio via multimodal ContentPart
+func testAudioEmbeddingCLAP(t *testing.T, ctx context.Context, serverURL string) {
 	t.Helper()
 
 	// Create a test audio file (1 second of 440Hz sine wave)
@@ -202,8 +210,8 @@ func testCLAPAudioEmbedding(t *testing.T, ctx context.Context, serverURL string)
 		len(embedding), embedding[0], embedding[1], embedding[2])
 }
 
-// testCLAPCrossModalSimilarity verifies text and audio embeddings have the same dimension
-func testCLAPCrossModalSimilarity(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+// testCrossModalSimilarityCLAP verifies text and audio embeddings have the same dimension
+func testCrossModalSimilarityCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
 	t.Helper()
 
 	// Get text embedding for a description
@@ -403,4 +411,104 @@ func createTestAudio(t *testing.T, sampleRate int, duration float64, frequency f
 	}
 
 	return buf.Bytes()
+}
+
+// makeAudioContentPart creates an audio ContentPart from raw WAV data.
+func makeAudioContentPart(t *testing.T, audioData []byte) oapi.ContentPart {
+	t.Helper()
+	base64Data := base64.StdEncoding.EncodeToString(audioData)
+	dataURI := fmt.Sprintf("data:audio/wav;base64,%s", base64Data)
+	var cp oapi.ContentPart
+	if err := cp.FromImageURLContentPart(oapi.ImageURLContentPart{
+		Type:     oapi.ImageURLContentPartTypeImageUrl,
+		ImageUrl: oapi.ImageURL{Url: dataURI},
+	}); err != nil {
+		t.Fatalf("Failed to create audio ContentPart: %v", err)
+	}
+	return cp
+}
+
+// testCrossModalRetrievalCLAP verifies that text queries retrieve the semantically
+// correct audio from a set of candidates based on cosine similarity ranking.
+func testCrossModalRetrievalCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+	t.Helper()
+
+	// Create candidate audio files
+	toneAudio := createTestAudio(t, 48000, 1.0, 440.0)
+	silenceAudio := createTestAudio(t, 48000, 1.0, 0.0)
+
+	toneEmb := embedAudio(t, ctx, serverURL, clapModelName, toneAudio)
+	silenceEmb := embedAudio(t, ctx, serverURL, clapModelName, silenceAudio)
+
+	// Text descriptions that should match each audio
+	textEmbs, err := c.Embed(ctx, clapModelName, []string{
+		"a musical tone",
+		"silence",
+	})
+	if err != nil {
+		t.Fatalf("Text embedding failed: %v", err)
+	}
+
+	toneTextEmb := textEmbs[0]
+	silenceTextEmb := textEmbs[1]
+
+	// "a musical tone" should be closer to the tone audio than to silence
+	toneToneSim := cosineSimilarity(toneTextEmb, toneEmb)
+	toneSilenceSim := cosineSimilarity(toneTextEmb, silenceEmb)
+	t.Logf("  sim(\"a musical tone\", tone audio) = %.4f", toneToneSim)
+	t.Logf("  sim(\"a musical tone\", silence audio) = %.4f", toneSilenceSim)
+
+	if toneToneSim <= toneSilenceSim {
+		t.Errorf("Retrieval failed: \"a musical tone\" closer to silence (%.4f) than to tone (%.4f)",
+			toneSilenceSim, toneToneSim)
+	} else {
+		t.Logf("Retrieval OK: \"a musical tone\" correctly closer to tone audio (margin=%.4f)",
+			toneToneSim-toneSilenceSim)
+	}
+
+	// "silence" should be closer to silence audio than to tone audio
+	silenceSilenceSim := cosineSimilarity(silenceTextEmb, silenceEmb)
+	silenceToneSim := cosineSimilarity(silenceTextEmb, toneEmb)
+	t.Logf("  sim(\"silence\", silence audio) = %.4f", silenceSilenceSim)
+	t.Logf("  sim(\"silence\", tone audio) = %.4f", silenceToneSim)
+
+	if silenceSilenceSim <= silenceToneSim {
+		t.Errorf("Retrieval failed: \"silence\" closer to tone (%.4f) than to silence (%.4f)",
+			silenceToneSim, silenceSilenceSim)
+	} else {
+		t.Logf("Retrieval OK: \"silence\" correctly closer to silence audio (margin=%.4f)",
+			silenceSilenceSim-silenceToneSim)
+	}
+}
+
+// testMixedModalityBatchCLAP verifies that a single embed request containing
+// both text and audio content parts returns correct, distinct embeddings.
+func testMixedModalityBatchCLAP(t *testing.T, ctx context.Context, serverURL string) {
+	t.Helper()
+
+	audioData := createTestAudio(t, 48000, 1.0, 440.0)
+
+	parts := []oapi.ContentPart{
+		makeTextContentPart(t, "a dog barking"),
+		makeAudioContentPart(t, audioData),
+	}
+
+	embeddings := embedMultimodal(t, ctx, serverURL, clapModelName, parts)
+
+	if len(embeddings) != 2 {
+		t.Fatalf("Expected 2 embeddings from mixed batch, got %d", len(embeddings))
+	}
+
+	for i, emb := range embeddings {
+		if len(emb) != clapEmbeddingDim {
+			t.Errorf("Embedding %d: expected dim %d, got %d", i, clapEmbeddingDim, len(emb))
+		}
+	}
+
+	// Text and audio embeddings should not be identical
+	sim := cosineSimilarity(embeddings[0], embeddings[1])
+	t.Logf("Mixed batch: text-audio similarity = %.4f", sim)
+	if sim > 0.99 {
+		t.Error("Mixed batch text and audio embeddings are suspiciously identical")
+	}
 }

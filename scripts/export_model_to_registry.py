@@ -18,8 +18,8 @@
 """
 Export HuggingFace models to ONNX format and prepare for Antfly model registry.
 
-This unified script handles embedders, rerankers, chunkers, recognizers (NER/extraction),
-rewriters (seq2seq), generators (LLMs), and multimodal models, generating
+This unified script handles embedders (text, image/CLIP, audio/CLAP), rerankers, chunkers,
+recognizers (NER/extraction), rewriters (seq2seq), and generators (LLMs), generating
 the manifest files needed for the R2-hosted registry.
 
 Usage:
@@ -38,8 +38,11 @@ Usage:
     # Export a chunker
     ./export_model_to_registry.py chunker mirth/chonky_mmbert_small_multilingual_1
 
-    # Export a CLIP multimodal model with variants
-    ./export_model_to_registry.py embedder openai/clip-vit-base-patch32 --capabilities multimodal --backends onnx --variants f16 i8
+    # Export a CLIP image embedding model with variants
+    ./export_model_to_registry.py embedder openai/clip-vit-base-patch32 --capabilities image --backends onnx --variants f16 i8
+
+    # Export a CLAP audio embedding model with variants
+    ./export_model_to_registry.py embedder Xenova/clap-htsat-unfused --capabilities audio --backends onnx --variants i8
 
     # Export sentence-transformers models (sentence similarity/embeddings)
     ./export_model_to_registry.py embedder sentence-transformers/all-MiniLM-L6-v2 --variants f16 i8
@@ -122,6 +125,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Import exporter registry (lazy import to avoid circular dependencies)
+def get_exporter_for_model(model_type, model_id, output_dir, variants, capabilities, **kwargs):
+    """Get the appropriate exporter using the registry."""
+    from exporters import get_exporter
+    return get_exporter(model_type, model_id, output_dir, variants, capabilities, **kwargs)
+
 ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader"]
 
 # Recognizer capabilities - these describe what extraction tasks the model supports
@@ -187,120 +196,6 @@ MODEL_TYPE_CONFIG = {
     },
 }
 
-# Files to include in the manifest (in order of importance)
-MANIFEST_FILES = [
-    "model.onnx",
-    "model.onnx_data",  # External data for large ONNX models
-    "tokenizer.json",
-    "config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "vocab.txt",
-]
-
-# Additional files for multimodal models
-MULTIMODAL_MANIFEST_FILES = [
-    "visual_model.onnx",
-    "visual_model.onnx.data",  # External data for large visual encoder
-    "text_model.onnx",
-    "text_model.onnx.data",  # External data for large text encoder
-    "visual_projection.onnx",
-    "visual_projection.onnx.data",  # External data for projection layer
-    "text_projection.onnx",
-    "text_projection.onnx.data",  # External data for projection layer
-    "tokenizer.json",
-    "config.json",
-    "clip_config.json",
-    "preprocessor_config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "vocab.json",
-]
-
-# Files for seq2seq/rewriter models (T5, FLAN-T5, etc.)
-SEQ2SEQ_MANIFEST_FILES = [
-    "encoder.onnx",
-    "encoder.onnx_data",
-    "decoder-init.onnx",
-    "decoder-init.onnx_data",
-    "decoder.onnx",
-    "decoder.onnx_data",
-    "tokenizer.json",
-    "config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "spiece.model",  # SentencePiece model for T5
-    "seq2seq_config.json",
-]
-
-# Files for GLiNER models
-GLINER_MANIFEST_FILES = [
-    "model.onnx",
-    "model.onnx_data",
-    "tokenizer.json",
-    "config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "gliner_config.json",
-]
-
-# Files for REBEL relation extraction models (seq2seq architecture)
-REBEL_MANIFEST_FILES = [
-    "encoder.onnx",
-    "encoder.onnx_data",
-    "decoder-init.onnx",
-    "decoder-init.onnx_data",
-    "decoder.onnx",
-    "decoder.onnx_data",
-    "tokenizer.json",
-    "config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "rebel_config.json",
-]
-
-# Files for generator models (ONNX Runtime GenAI)
-GENERATOR_MANIFEST_FILES = [
-    "genai_config.json",
-    "model.onnx",
-    "model.onnx.data",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "config.json",
-    "generation_config.json",
-]
-
-# Files for classifier models (Zero-Shot Classification / NLI)
-CLASSIFIER_MANIFEST_FILES = [
-    "model.onnx",
-    "model.onnx_data",
-    "tokenizer.json",
-    "config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "zsc_config.json",
-]
-
-# Files for reader models (Vision2Seq: TrOCR, Donut, Florence-2)
-READER_MANIFEST_FILES = [
-    "encoder_model.onnx",
-    "encoder_model.onnx_data",
-    "decoder_model.onnx",
-    "decoder_model.onnx_data",
-    "decoder_with_past_model.onnx",
-    "decoder_with_past_model.onnx_data",
-    "decoder_model_merged.onnx",  # Alternative merged decoder format
-    "decoder_model_merged.onnx_data",
-    "tokenizer.json",
-    "config.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "preprocessor_config.json",
-    "generation_config.json",
-    "termite_metadata.json",
-]
-
 # Reader model type patterns for auto-detection
 READER_MODEL_PATTERNS = {
     "trocr": ["trocr", "TrOCR"],
@@ -308,6 +203,147 @@ READER_MODEL_PATTERNS = {
     "nougat": ["nougat", "Nougat"],
     "florence": ["florence", "Florence"],
 }
+
+# Patterns for dynamic file discovery
+# File extensions to include in manifest
+MANIFEST_INCLUDE_EXTENSIONS = {
+    ".onnx",
+    ".json",
+    ".txt",       # vocab.txt
+    ".model",     # sentencepiece
+    ".tiktoken",  # tiktoken tokenizers
+    ".data",      # .onnx.data external data files
+}
+
+# Additional suffixes for external ONNX data files
+ONNX_DATA_SUFFIXES = {".onnx_data", ".onnx.data"}
+
+# File names to include regardless of extension
+MANIFEST_INCLUDE_NAMES = {
+    "merges.txt",
+    "vocab.txt",
+    "added_tokens.json",
+}
+
+# Patterns to exclude from manifest (directories and files)
+MANIFEST_EXCLUDE_PATTERNS = {
+    "__pycache__",
+    ".git",
+    ".DS_Store",
+    "*.pyc",
+    "model_manifest.json",  # We generate this, don't include it
+    "*.safetensors",        # Original weights, not needed after ONNX export
+    "*.bin",                # PyTorch weights
+    "*.h5",                 # TF weights
+    "*.msgpack",            # Flax weights
+    "pytorch_model*.bin",
+    "tf_model*.h5",
+    "flax_model*.msgpack",
+}
+
+# Variant suffixes to detect (maps suffix to variant ID)
+VARIANT_SUFFIXES = {
+    "_f16.onnx": "f16",
+    "_bf16.onnx": "bf16",
+    "_i8.onnx": "i8",
+    "_i8-st.onnx": "i8-st",
+    "_i4.onnx": "i4",
+}
+
+
+def discover_model_files(model_dir: Path) -> tuple[list[dict], dict[str, list[dict]]]:
+    """
+    Dynamically discover all model files in a directory.
+
+    Returns:
+        tuple of (base_files, variants):
+        - base_files: list of file info dicts for base model files
+        - variants: dict mapping variant ID to list of file info dicts
+    """
+    base_files = []
+    variants: dict[str, list[dict]] = {}
+
+    def should_include(filepath: Path) -> bool:
+        """Check if a file should be included in the manifest."""
+        name = filepath.name
+
+        # Check exclusions first
+        for pattern in MANIFEST_EXCLUDE_PATTERNS:
+            if pattern.startswith("*"):
+                if name.endswith(pattern[1:]):
+                    return False
+            elif name == pattern or pattern in str(filepath):
+                return False
+
+        # Check if it's a known include name
+        if name in MANIFEST_INCLUDE_NAMES:
+            return True
+
+        # Check for ONNX external data files (e.g., model.onnx_data, model.onnx.data)
+        for suffix in ONNX_DATA_SUFFIXES:
+            if name.endswith(suffix):
+                return True
+
+        # Check extension
+        return filepath.suffix.lower() in MANIFEST_INCLUDE_EXTENSIONS
+
+    def is_variant_file(filename: str) -> str | None:
+        """Check if a file is a variant and return the variant ID."""
+        for suffix, variant_id in VARIANT_SUFFIXES.items():
+            if filename.endswith(suffix):
+                return variant_id
+            # Also check for external data files associated with variants
+            # e.g., model_f16.onnx_data or model_f16.onnx.data
+            for data_suffix in ONNX_DATA_SUFFIXES:
+                onnx_suffix = suffix  # e.g., "_f16.onnx"
+                variant_data_suffix = onnx_suffix.replace(".onnx", data_suffix.replace(".onnx", ""))
+                if filename.endswith(variant_data_suffix):
+                    return variant_id
+        return None
+
+    def file_info(filepath: Path, relative_name: str | None = None) -> dict:
+        """Create file info dict with name, digest, and size."""
+        digest = compute_sha256(filepath)
+        size = filepath.stat().st_size
+        return {
+            "name": relative_name or filepath.name,
+            "digest": digest,
+            "size": size,
+        }
+
+    # Walk the model directory (non-recursive for top-level, handle subdirs specially)
+    for item in sorted(model_dir.iterdir()):
+        if item.is_file() and should_include(item):
+            variant_id = is_variant_file(item.name)
+            if variant_id:
+                if variant_id not in variants:
+                    variants[variant_id] = []
+                variants[variant_id].append(file_info(item))
+                logger.info(f"  [variant:{variant_id}] {item.name}: {item.stat().st_size:,} bytes")
+            else:
+                base_files.append(file_info(item))
+                logger.info(f"  {item.name}: {item.stat().st_size:,} bytes")
+
+        elif item.is_dir():
+            # Handle variant subdirectories (e.g., i4/, i4-cuda/)
+            dir_name = item.name
+            if dir_name in {"i4", "i4-cuda", "i4-dml", "f16", "i8"}:
+                variant_files = []
+                for subitem in sorted(item.iterdir()):
+                    if subitem.is_file() and should_include(subitem):
+                        variant_files.append(file_info(subitem, f"{dir_name}/{subitem.name}"))
+                        logger.info(f"  [variant:{dir_name}] {dir_name}/{subitem.name}: {subitem.stat().st_size:,} bytes")
+                if variant_files:
+                    variants[dir_name] = variant_files
+            # Skip other directories (like __pycache__)
+
+    # For backward compatibility, convert single-file variants to single dict
+    # Multimodal models (CLIP/CLAP with visual+text or audio+text) keep lists
+    for variant_id, variant_files in variants.items():
+        if len(variant_files) == 1:
+            variants[variant_id] = variant_files[0]
+
+    return base_files, variants
 
 
 def detect_recognizer_type(model_id: str) -> tuple[str, list[str]]:
@@ -448,9 +484,6 @@ def compute_sha256(filepath: Path) -> str:
 
 def get_ort_model_class(model_type: ModelType):
     """Get the appropriate ORT model class for the model type."""
-    if model_type == "multimodal":
-        return None  # CLIP uses custom export
-
     from optimum.onnxruntime import (
         ORTModelForFeatureExtraction,
         ORTModelForSequenceClassification,
@@ -472,6 +505,7 @@ def export_model(
     output_dir: Path,
     variants: list[str] | None = None,
     capabilities: list[str] | None = None,
+    from_onnx: bool = False,
 ) -> Path:
     """
     Export a HuggingFace model to ONNX format.
@@ -481,16 +515,25 @@ def export_model(
         model_id: HuggingFace model ID
         output_dir: Directory to save the model
         variants: List of variant types to create (e.g., ["f16", "i8"])
-        capabilities: List of capabilities (e.g., ["multimodal"])
+        capabilities: List of capabilities (e.g., ["image", "audio"])
+        from_onnx: If True, download pre-exported ONNX files instead of converting
 
     Returns the path to the exported model directory.
     """
     variants = variants or []
     capabilities = capabilities or []
 
-    # Multimodal models (e.g., CLIP) use a special export path
-    if "multimodal" in capabilities:
-        return export_multimodal_model(model_id, output_dir, variants)
+    # CLIP image models use a special export path
+    if "image" in capabilities:
+        return export_clip_model(model_id, output_dir, variants, from_onnx=from_onnx)
+
+    # CLAP audio models use a special export path
+    if "audio" in capabilities:
+        return export_clap_model(model_id, output_dir, variants, from_onnx=from_onnx)
+
+    # Generic from_onnx handling for other model types
+    if from_onnx:
+        return download_onnx_model(model_id, output_dir)
 
     from transformers import AutoTokenizer
     from optimum.onnxruntime import ORTQuantizer
@@ -549,10 +592,11 @@ def export_model(
     return output_dir
 
 
-def export_multimodal_model(
+def export_clip_model(
     model_id: str,
     output_dir: Path,
     variants: list[str] | None = None,
+    from_onnx: bool = False,
 ) -> Path:
     """
     Export a CLIP model to ONNX format.
@@ -564,15 +608,20 @@ def export_multimodal_model(
         model_id: HuggingFace model ID
         output_dir: Directory to save the model
         variants: List of variant types to create (e.g., ["f16", "i8"])
+        from_onnx: If True, download pre-exported ONNX files instead of converting
     """
     variants = variants or []
+
+    if from_onnx:
+        return download_onnx_model(model_id, output_dir)
+
     import torch
     import onnx
     from transformers import CLIPModel, CLIPProcessor, CLIPTokenizerFast
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Exporting multimodal (CLIP): {model_id}")
+    logger.info(f"Exporting CLIP image model: {model_id}")
     logger.info(f"Output: {output_dir}")
 
     # Load model and processor
@@ -732,6 +781,202 @@ def export_multimodal_model(
                 weight_type=QuantType.QUInt8,
             )
             logger.info("  Visual encoder quantized")
+
+            quantize_dynamic(
+                model_input=str(text_path),
+                model_output=str(output_dir / "text_model_i8.onnx"),
+                weight_type=QuantType.QUInt8,
+            )
+            logger.info("  Text encoder quantized")
+        except Exception as e:
+            logger.warning(f"Quantization failed: {e}")
+
+    return output_dir
+
+
+def download_onnx_model(model_id: str, output_dir: Path) -> Path:
+    """
+    Download a pre-exported ONNX model from HuggingFace.
+
+    Downloads all relevant files (ONNX models, configs, tokenizers) while
+    skipping large original model files (safetensors, bin, h5, msgpack).
+    Files in onnx/ subdirectory are flattened to the root.
+
+    Args:
+        model_id: HuggingFace model ID (e.g., Xenova/clap-htsat-unfused)
+        output_dir: Directory to save the model
+
+    Returns the output directory path.
+    """
+    from huggingface_hub import hf_hub_download, list_repo_files
+    import shutil
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Downloading pre-exported ONNX model: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Download all files from the HuggingFace repo
+    repo_files = list_repo_files(model_id)
+    logger.info(f"Found {len(repo_files)} files in repo")
+
+    for filename in repo_files:
+        # Skip large original model files
+        if filename.endswith(('.safetensors', '.bin', '.h5', '.msgpack')):
+            logger.info(f"  Skipping: {filename}")
+            continue
+        # Skip hidden files and directories
+        if filename.startswith('.'):
+            continue
+
+        logger.info(f"  Downloading: {filename}")
+        local_path = hf_hub_download(model_id, filename, local_dir=output_dir)
+
+        # Flatten onnx/ subdirectory to root
+        if filename.startswith("onnx/"):
+            flat_name = filename.replace("onnx/", "")
+            dest_path = output_dir / flat_name
+            if not dest_path.exists():
+                shutil.move(local_path, dest_path)
+                logger.info(f"    -> Moved to: {flat_name}")
+
+    # Clean up empty onnx directory if it exists
+    onnx_dir = output_dir / "onnx"
+    if onnx_dir.exists() and onnx_dir.is_dir():
+        try:
+            onnx_dir.rmdir()
+        except OSError:
+            pass  # Directory not empty, that's fine
+
+    return output_dir
+
+
+def export_clap_model(
+    model_id: str,
+    output_dir: Path,
+    variants: list[str] | None = None,
+    from_onnx: bool = False,
+) -> Path:
+    """
+    Export a CLAP model to ONNX format.
+
+    CLAP models have separate audio and text encoders that are exported
+    as separate ONNX files.
+
+    Args:
+        model_id: HuggingFace model ID (e.g., laion/clap-htsat-unfused)
+        output_dir: Directory to save the model
+        variants: List of variant types to create (e.g., ["i8"])
+        from_onnx: If True, download pre-exported ONNX files (e.g., Xenova/clap-htsat-unfused)
+    """
+    variants = variants or []
+
+    if from_onnx:
+        return download_onnx_model(model_id, output_dir)
+
+    import torch
+    import onnx
+    from transformers import ClapModel, ClapProcessor
+
+    logger.info(f"Exporting CLAP audio model: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Load model and processor
+    logger.info("Loading CLAP model...")
+    model = ClapModel.from_pretrained(model_id)
+    processor = ClapProcessor.from_pretrained(model_id)
+
+    model.eval()
+
+    # Export audio encoder
+    logger.info("Exporting audio encoder...")
+    audio_path = output_dir / "audio_model.onnx"
+    # CLAP expects audio input of shape [batch, samples] at 48kHz
+    # Default is 10 seconds = 480000 samples
+    sample_rate = processor.feature_extractor.sampling_rate
+    max_length = processor.feature_extractor.max_length_s
+    num_samples = int(sample_rate * max_length)
+    dummy_audio = torch.randn(1, num_samples)
+
+    # Process audio to get mel spectrogram input
+    audio_inputs = processor(audios=dummy_audio.numpy(), return_tensors="pt", sampling_rate=sample_rate)
+
+    torch.onnx.export(
+        model.audio_model,
+        (audio_inputs["input_features"],),
+        str(audio_path),
+        export_params=True,
+        opset_version=14,
+        do_constant_folding=True,
+        input_names=["input_features"],
+        output_names=["last_hidden_state", "pooler_output"],
+        dynamic_axes={
+            "input_features": {0: "batch_size"},
+            "last_hidden_state": {0: "batch_size"},
+            "pooler_output": {0: "batch_size"},
+        },
+    )
+    onnx_model = onnx.load(str(audio_path))
+    onnx.checker.check_model(onnx_model)
+    logger.info(f"  Audio encoder saved: {audio_path}")
+
+    # Export text encoder
+    logger.info("Exporting text encoder...")
+    text_path = output_dir / "text_model.onnx"
+    dummy_text = ["a sound of a dog barking"]
+    text_inputs = processor(text=dummy_text, return_tensors="pt", padding=True)
+
+    torch.onnx.export(
+        model.text_model,
+        (text_inputs["input_ids"], text_inputs["attention_mask"]),
+        str(text_path),
+        export_params=True,
+        opset_version=14,
+        do_constant_folding=True,
+        input_names=["input_ids", "attention_mask"],
+        output_names=["last_hidden_state", "pooler_output"],
+        dynamic_axes={
+            "input_ids": {0: "batch_size", 1: "sequence"},
+            "attention_mask": {0: "batch_size", 1: "sequence"},
+            "last_hidden_state": {0: "batch_size", 1: "sequence"},
+            "pooler_output": {0: "batch_size"},
+        },
+    )
+    onnx_model = onnx.load(str(text_path))
+    onnx.checker.check_model(onnx_model)
+    logger.info(f"  Text encoder saved: {text_path}")
+
+    # Save processor and config files
+    processor.save_pretrained(output_dir)
+
+    # Create CLAP-specific config
+    clap_config = {
+        "model_type": "clap",
+        "audio_config": {
+            "hidden_size": model.config.audio_config.hidden_size,
+            "sample_rate": sample_rate,
+            "max_length_s": max_length,
+        },
+        "text_config": {
+            "hidden_size": model.config.text_config.hidden_size,
+        },
+        "projection_dim": model.config.projection_dim,
+    }
+    with open(output_dir / "clap_config.json", "w") as f:
+        json.dump(clap_config, f, indent=2)
+
+    # Create int8 quantized variants if requested
+    if "i8" in variants:
+        logger.info("Applying dynamic quantization (int8)...")
+        try:
+            from onnxruntime.quantization import QuantType, quantize_dynamic
+
+            quantize_dynamic(
+                model_input=str(audio_path),
+                model_output=str(output_dir / "audio_model_i8.onnx"),
+                weight_type=QuantType.QUInt8,
+            )
+            logger.info("  Audio encoder quantized")
 
             quantize_dynamic(
                 model_input=str(text_path),
@@ -1545,136 +1790,12 @@ def generate_manifest(
         backends: List of supported backends (e.g., ["onnx"])
         recognizer_arch: For recognizers, the architecture type: "gliner", "rebel", or "ner"
     """
-    files = []
-    variants = {}
+    # Dynamically discover all model files in the directory
+    logger.info("Discovering model files...")
+    files, variants = discover_model_files(model_dir)
 
-    # Use appropriate file list based on model type and capabilities
-    is_multimodal = capabilities and "multimodal" in capabilities
-    is_generator = model_type == "generator"
-    is_classifier = model_type == "classifier"
-    is_reader = model_type == "reader"
-    is_gliner = recognizer_arch == "gliner"
-    is_rebel = recognizer_arch == "rebel"
-
-    if is_multimodal:
-        file_list = MULTIMODAL_MANIFEST_FILES
-    elif model_type == "rewriter":
-        file_list = SEQ2SEQ_MANIFEST_FILES
-    elif is_classifier:
-        file_list = CLASSIFIER_MANIFEST_FILES
-    elif is_reader:
-        file_list = READER_MANIFEST_FILES
-    elif is_gliner:
-        file_list = GLINER_MANIFEST_FILES
-    elif is_rebel:
-        file_list = REBEL_MANIFEST_FILES
-    elif is_generator:
-        file_list = GENERATOR_MANIFEST_FILES
-    else:
-        file_list = MANIFEST_FILES
-
-    for filename in file_list:
-        filepath = model_dir / filename
-        if filepath.exists():
-            digest = compute_sha256(filepath)
-            size = filepath.stat().st_size
-            files.append({
-                "name": filename,
-                "digest": digest,
-                "size": size,
-            })
-            logger.info(f"  {filename}: {size:,} bytes ({digest[:20]}...)")
-
-    # Check for variant models using the new naming convention
-    # Variant ID -> filename mapping
-    VARIANT_FILENAMES = {
-        "f16": "model_f16.onnx",
-        "bf16": "model_bf16.onnx",
-        "i8": "model_i8.onnx",
-        "i8-st": "model_i8-st.onnx",
-        "i4": "model_i4.onnx",
-    }
-
-    if is_multimodal:
-        # CLIP has separate visual and text encoders for each variant
-        # Check for f16 variants
-        visual_f16_path = model_dir / "visual_model_f16.onnx"
-        text_f16_path = model_dir / "text_model_f16.onnx"
-        if visual_f16_path.exists() and text_f16_path.exists():
-            variants["f16"] = []
-            for vt_path in [visual_f16_path, text_f16_path]:
-                digest = compute_sha256(vt_path)
-                size = vt_path.stat().st_size
-                variants["f16"].append({
-                    "name": vt_path.name,
-                    "digest": digest,
-                    "size": size,
-                })
-                logger.info(f"  {vt_path.name}: {size:,} bytes ({digest[:20]}...)")
-
-        # Check for i8 variants
-        visual_i8_path = model_dir / "visual_model_i8.onnx"
-        text_i8_path = model_dir / "text_model_i8.onnx"
-        if visual_i8_path.exists() and text_i8_path.exists():
-            variants["i8"] = []
-            for qt_path in [visual_i8_path, text_i8_path]:
-                digest = compute_sha256(qt_path)
-                size = qt_path.stat().st_size
-                variants["i8"].append({
-                    "name": qt_path.name,
-                    "digest": digest,
-                    "size": size,
-                })
-                logger.info(f"  {qt_path.name}: {size:,} bytes ({digest[:20]}...)")
-    elif is_generator:
-        # Generator variants are stored in subdirectories (i4/, i4-cuda/, i4-dml/)
-        GENERATOR_VARIANTS = ["i4", "i4-cuda", "i4-dml"]
-        for variant_id in GENERATOR_VARIANTS:
-            variant_dir = model_dir / variant_id
-            if variant_dir.exists() and variant_dir.is_dir():
-                variant_files = []
-                for filename in GENERATOR_MANIFEST_FILES:
-                    filepath = variant_dir / filename
-                    if filepath.exists():
-                        digest = compute_sha256(filepath)
-                        size = filepath.stat().st_size
-                        variant_files.append({
-                            "name": f"{variant_id}/{filename}",
-                            "digest": digest,
-                            "size": size,
-                        })
-                        logger.info(f"  {variant_id}/{filename}: {size:,} bytes ({digest[:20]}...)")
-                if variant_files:
-                    variants[variant_id] = variant_files
-    else:
-        # Check for all known variant files
-        for variant_id, filename in VARIANT_FILENAMES.items():
-            variant_path = model_dir / filename
-            if variant_path.exists():
-                digest = compute_sha256(variant_path)
-                size = variant_path.stat().st_size
-                variant_files = [{
-                    "name": filename,
-                    "digest": digest,
-                    "size": size,
-                }]
-                logger.info(f"  {filename}: {size:,} bytes ({digest[:20]}...)")
-
-                # Check for external data file for this variant
-                data_filename = filename.replace(".onnx", ".onnx_data")
-                data_path = model_dir / data_filename
-                if data_path.exists():
-                    data_digest = compute_sha256(data_path)
-                    data_size = data_path.stat().st_size
-                    variant_files.append({
-                        "name": data_filename,
-                        "digest": data_digest,
-                        "size": data_size,
-                    })
-                    logger.info(f"  {data_filename}: {data_size:,} bytes ({data_digest[:20]}...)")
-
-                # Store as list if multiple files, single dict if just one
-                variants[variant_id] = variant_files if len(variant_files) > 1 else variant_files[0]
+    if not files:
+        logger.warning(f"No model files found in {model_dir}")
 
     manifest = {
         "schemaVersion": 2,
@@ -2276,8 +2397,11 @@ def test_model(
     logger.info("Testing exported model...")
     capabilities = capabilities or []
 
-    if "multimodal" in capabilities:
-        return test_multimodal_model(model_dir)
+    if "image" in capabilities:
+        return test_clip_model(model_dir)
+
+    if "audio" in capabilities:
+        return test_clap_model(model_dir)
 
     if model_type == "rewriter":
         return test_seq2seq_model(model_dir)
@@ -2666,7 +2790,7 @@ def test_seq2seq_model(model_dir: Path) -> bool:
         return False
 
 
-def test_multimodal_model(model_dir: Path) -> bool:
+def test_clip_model(model_dir: Path) -> bool:
     """Test the exported CLIP model."""
     import onnxruntime as ort
     import numpy as np
@@ -2769,6 +2893,86 @@ def test_multimodal_model(model_dir: Path) -> bool:
             return False
 
         logger.info(f"  Final embedding dimension: {projection_dim}")
+        logger.info("Test passed!")
+        return True
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        return False
+
+
+def test_clap_model(model_dir: Path) -> bool:
+    """Test the exported CLAP model."""
+    import onnxruntime as ort
+    import numpy as np
+    from transformers import ClapProcessor
+
+    try:
+        audio_path = model_dir / "audio_model.onnx"
+        text_path = model_dir / "text_model.onnx"
+        clap_config_path = model_dir / "clap_config.json"
+        config_path = model_dir / "config.json"
+
+        # Load CLAP config for expected dimensions
+        # Try clap_config.json first, fall back to config.json (for Xenova models)
+        if clap_config_path.exists():
+            with open(clap_config_path) as f:
+                clap_config = json.load(f)
+            expected_audio_dim = clap_config["audio_config"]["hidden_size"]
+            expected_text_dim = clap_config["text_config"]["hidden_size"]
+            projection_dim = clap_config["projection_dim"]
+        elif config_path.exists():
+            with open(config_path) as f:
+                config = json.load(f)
+            # Xenova format uses nested audio_config/text_config
+            expected_audio_dim = config.get("audio_config", {}).get("hidden_size", 768)
+            expected_text_dim = config.get("text_config", {}).get("hidden_size", 512)
+            projection_dim = config.get("projection_dim", 512)
+        else:
+            raise FileNotFoundError("No CLAP config found (clap_config.json or config.json)")
+
+        # Load processor
+        processor = ClapProcessor.from_pretrained(model_dir)
+
+        # Test audio encoder
+        logger.info("Testing audio encoder...")
+        audio_session = ort.InferenceSession(str(audio_path), providers=["CPUExecutionProvider"])
+
+        # Get audio params from processor (works for both our export and Xenova models)
+        sample_rate = processor.feature_extractor.sampling_rate
+        max_length_s = getattr(processor.feature_extractor, 'max_length_s', 10)
+        num_samples = int(sample_rate * max_length_s)
+        dummy_audio = np.random.randn(num_samples).astype(np.float32)
+
+        audio_inputs = processor(audio=dummy_audio, return_tensors="np", sampling_rate=sample_rate)
+        audio_outputs = audio_session.run(None, {"input_features": audio_inputs["input_features"]})
+        # Use pooler output (index 1) if available, otherwise use last hidden state (index 0)
+        audio_pooler = audio_outputs[1] if len(audio_outputs) > 1 else audio_outputs[0]
+        logger.info(f"  Audio outputs: {len(audio_outputs)} tensors")
+        logger.info(f"  Audio embedding shape: {audio_pooler.shape}")
+
+        # Test text encoder
+        logger.info("Testing text encoder...")
+        text_session = ort.InferenceSession(str(text_path), providers=["CPUExecutionProvider"])
+
+        text_inputs = processor(text=["a sound of a dog barking"], return_tensors="np", padding=True)
+
+        # Build input dict based on what the model expects
+        input_names = {inp.name for inp in text_session.get_inputs()}
+        text_feed = {"input_ids": text_inputs["input_ids"]}
+        if "attention_mask" in input_names:
+            text_feed["attention_mask"] = text_inputs["attention_mask"]
+
+        text_outputs = text_session.run(None, text_feed)
+        # Use pooler output (index 1) if available, otherwise use last hidden state (index 0)
+        text_pooler = text_outputs[1] if len(text_outputs) > 1 else text_outputs[0]
+        logger.info(f"  Text outputs: {len(text_outputs)} tensors")
+        logger.info(f"  Text embedding shape: {text_pooler.shape}")
+
+        logger.info(f"  Audio hidden size: {expected_audio_dim}")
+        logger.info(f"  Text hidden size: {expected_text_dim}")
+        logger.info(f"  Projection dimension: {projection_dim}")
+
         logger.info("Test passed!")
         return True
 
@@ -2913,7 +3117,7 @@ def cmd_export(args):
     logger.info(f"From ONNX:   {args.from_onnx}")
     logger.info("=" * 60)
 
-    # Export model using appropriate function
+    # Export model using the exporter registry
     hf_token = getattr(args, "hf_token", None)
 
     if args.from_onnx:
@@ -2921,27 +3125,69 @@ def cmd_export(args):
     else:
         logger.info("\n[1/4] Exporting model to ONNX...")
 
+    # Map model types and recognizer architectures to exporter registry keys
+    export_model_type = args.model_type
+    export_capabilities = list(capabilities) if capabilities else []
+
+    # Handle special model type mappings
     if args.model_type == "rewriter":
-        export_seq2seq_model(model_id, model_dir, args.variants)
-    elif args.model_type == "generator":
-        export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
-    elif args.model_type == "classifier":
-        export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
-    elif args.model_type == "reader":
-        export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
-    elif recognizer_arch == "gliner2":
-        export_gliner2_model(model_id, model_dir, args.variants)
-    elif recognizer_arch == "gliner":
-        export_gliner_model(model_id, model_dir, args.variants)
-    elif recognizer_arch == "rebel":
-        export_rebel_model(model_id, model_dir, args.variants)
-    else:
-        export_model(args.model_type, model_id, model_dir, args.variants, capabilities)
+        export_model_type = "seq2seq"
+    elif args.model_type == "recognizer":
+        # Map recognizer architectures to capabilities for the registry
+        if recognizer_arch == "gliner2":
+            export_capabilities = ["labels-v2"]
+        elif recognizer_arch == "gliner":
+            export_capabilities = ["labels"]
+        elif recognizer_arch == "rebel":
+            export_capabilities = ["relations"]
+
+    # Build kwargs for exporter constructor
+    exporter_kwargs = {}
+    if args.model_type == "generator" and hf_token:
+        exporter_kwargs["hf_token"] = hf_token
+    if args.model_type == "reader":
+        exporter_kwargs["trust_remote_code"] = args.trust_remote_code
+
+    try:
+        exporter = get_exporter_for_model(
+            export_model_type,
+            model_id,
+            model_dir,
+            args.variants,
+            export_capabilities,
+            **exporter_kwargs,
+        )
+        exporter.run(from_onnx=args.from_onnx)
+    except ValueError as e:
+        # Fall back to legacy export functions if no exporter registered
+        logger.warning(f"No exporter in registry, falling back to legacy: {e}")
+        if args.model_type == "rewriter":
+            export_seq2seq_model(model_id, model_dir, args.variants)
+        elif args.model_type == "generator":
+            export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
+        elif args.model_type == "classifier":
+            export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
+        elif args.model_type == "reader":
+            export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
+        elif recognizer_arch == "gliner2":
+            export_gliner2_model(model_id, model_dir, args.variants)
+        elif recognizer_arch == "gliner":
+            export_gliner_model(model_id, model_dir, args.variants)
+        elif recognizer_arch == "rebel":
+            export_rebel_model(model_id, model_dir, args.variants)
+        else:
+            export_model(args.model_type, model_id, model_dir, args.variants, capabilities, from_onnx=args.from_onnx)
+        exporter = None
 
     # Test model
     if not args.no_test:
         logger.info("\n[2/4] Testing exported model...")
-        if not test_model(args.model_type, model_dir, capabilities, recognizer_arch=recognizer_arch):
+        # Use exporter's test method if available, otherwise fall back to legacy
+        if exporter is not None:
+            if not exporter.test():
+                logger.error("Model test failed, aborting")
+                sys.exit(1)
+        elif not test_model(args.model_type, model_dir, capabilities, recognizer_arch=recognizer_arch):
             logger.error("Model test failed, aborting")
             sys.exit(1)
     else:
@@ -3022,8 +3268,11 @@ Examples:
   # Export reranker with int8 and FP16 variants
   %(prog)s reranker mixedbread-ai/mxbai-rerank-base-v1 --variants f16 i8
 
-  # Export CLIP multimodal model
-  %(prog)s embedder openai/clip-vit-base-patch32 --capabilities multimodal --backends onnx --variants f16 i8
+  # Export CLIP image model
+  %(prog)s embedder openai/clip-vit-base-patch32 --capabilities image --backends onnx --variants f16 i8
+
+  # Export CLAP audio model
+  %(prog)s embedder Xenova/clap-htsat-unfused --capabilities audio --backends onnx --variants i8
 
   # Export and upload to R2
   %(prog)s embedder BAAI/bge-small-en-v1.5 --upload --r2-bucket my-bucket
@@ -3171,10 +3420,10 @@ Environment Variables:
             nargs="*",
             default=[],
             help=(
-                "Model capabilities. For embedders: multimodal. "
+                "Model capabilities. For embedders: image (CLIP), audio (CLAP). "
                 "For recognizers: labels, zeroshot, relations, answers. "
                 "Capabilities are auto-detected for recognizers but can be overridden. "
-                "Example: --capabilities multimodal or --capabilities labels zeroshot"
+                "Example: --capabilities image or --capabilities labels zeroshot"
             ),
         )
         export_parser.add_argument(

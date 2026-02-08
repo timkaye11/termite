@@ -6,9 +6,29 @@
   "source": "fastino/gliner2-base-v1",
   "files": [
     {
+      "name": "added_tokens.json",
+      "digest": "sha256:3c274ca559be8b7b18febf616724ec05f8a8abccd428bd2744608f45f7a0b067",
+      "size": 230
+    },
+    {
+      "name": "gliner_config.json",
+      "digest": "sha256:ccf66b272190b028e325553445766af9b355298de4b87a0c78d0f27c6a2f506a",
+      "size": 1188
+    },
+    {
       "name": "model.onnx",
       "digest": "sha256:cf127670cd93f1b4360e79166cddb411cf1ef7e02f777879dcd861384af40205",
       "size": 806806487
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:84ea70143f533d7e99b393d87f20010887a9ac2cba955828ef313886e4e83f4f",
+      "size": 2414
+    },
+    {
+      "name": "spm.model",
+      "digest": "sha256:c679fbf93643d19aab7ee10c0b99e460bdbc02fedf34b92b05af343b4af586fd",
+      "size": 2464616
     },
     {
       "name": "tokenizer.json",
@@ -19,17 +39,12 @@
       "name": "tokenizer_config.json",
       "digest": "sha256:d53b9e4665ea984792aab93a0b49a326500105b1144e763da1550957b57a7ffa",
       "size": 3236
-    },
-    {
-      "name": "special_tokens_map.json",
-      "digest": "sha256:84ea70143f533d7e99b393d87f20010887a9ac2cba955828ef313886e4e83f4f",
-      "size": 2414
     }
   ],
   "owner": "fastino",
   "provenance": {
     "downloadedFrom": "https://huggingface.co/fastino/gliner2-base-v1",
-    "downloadedAt": "2026-02-03T22:08:27.313941+00:00"
+    "downloadedAt": "2026-02-04T01:41:16.480951+00:00"
   },
   "capabilities": [
     "labels",
