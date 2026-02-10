@@ -2,8 +2,25 @@
   "schemaVersion": 2,
   "name": "flan-t5-small-squad-qg",
   "type": "rewriter",
-  "description": "",
+  "description": "Question generation model fine-tuned on SQuAD. Generates questions from context passages for data augmentation.",
   "source": "lmqg/flan-t5-small-squad-qg",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/lmqg/flan-t5-small-squad-qg",
+    "tags": ["question-generation", "seq2seq", "data-augmentation"],
+    "languages": ["en"],
+    "architecture": "Flan-T5-small",
+    "parameters": "77M",
+    "max_tokens": 512,
+    "training_datasets": ["SQuAD"],
+    "usage_examples": [
+      {
+        "title": "Generate questions",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/rewrite \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"lmqg/flan-t5-small-squad-qg\", \"texts\": [\"Python is a high-level programming language.\"]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "encoder.onnx",

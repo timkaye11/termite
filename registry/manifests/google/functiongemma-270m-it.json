@@ -2,8 +2,24 @@
   "schemaVersion": 2,
   "name": "functiongemma-270m-it",
   "type": "generator",
-  "description": "",
+  "description": "Compact instruction-tuned LLM optimized for function calling and structured output generation.",
   "source": "google/functiongemma-270m-it",
+  "card": {
+    "license": "Gemma",
+    "homepage": "https://huggingface.co/google/functiongemma-270m-it",
+    "tags": ["generation", "function-calling", "instruction-tuned"],
+    "languages": ["en"],
+    "architecture": "Gemma-270M",
+    "parameters": "270M",
+    "max_tokens": 8192,
+    "usage_examples": [
+      {
+        "title": "Generate text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/generate \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"google/functiongemma-270m-it\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the capital of France?\"}]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "genai_config.json",

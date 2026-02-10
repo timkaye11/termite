@@ -5,6 +5,23 @@
   "type": "embedder",
   "description": "Long-context embeddings with Matryoshka support. Flexible dimensions (64-768) and 8K token context.",
   "source": "nomic-ai/nomic-embed-text-v1.5",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+    "tags": ["embedding", "retrieval", "matryoshka", "long-context"],
+    "languages": ["en"],
+    "architecture": "NomicBERT",
+    "parameters": "137M",
+    "dimensions": 768,
+    "max_tokens": 8192,
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"nomic-ai/nomic-embed-text-v1.5\", \"input\": [\"search query text\"]}'"
+      }
+    ]
+  },
   "files": [],
   "variants": {},
   "backends": ["onnx"]

@@ -3,8 +3,24 @@
   "name": "mxbai-rerank-base-v1",
   "owner": "mixedbread-ai",
   "type": "reranker",
-  "description": "",
+  "description": "Cross-encoder reranker for improving search result relevance. Strong performance on BEIR benchmarks.",
   "source": "mixedbread-ai/mxbai-rerank-base-v1",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/mixedbread-ai/mxbai-rerank-base-v1",
+    "tags": ["reranking", "cross-encoder", "retrieval"],
+    "languages": ["en"],
+    "architecture": "DeBERTa-v3-base",
+    "parameters": "184M",
+    "max_tokens": 512,
+    "usage_examples": [
+      {
+        "title": "Rerank documents",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/rerank \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"mixedbread-ai/mxbai-rerank-base-v1\", \"query\": \"What is machine learning?\", \"documents\": [\"ML is a subset of AI.\", \"The weather is nice today.\"]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "model.onnx",

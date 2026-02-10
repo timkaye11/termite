@@ -3,8 +3,24 @@
   "name": "rebel-large",
   "owner": "Babelscape",
   "type": "recognizer",
-  "description": "",
+  "description": "Relation extraction model that extracts triplets (subject, relation, object) from text using seq2seq generation.",
   "source": "Babelscape/rebel-large",
+  "card": {
+    "license": "CC-BY-NC-SA-4.0",
+    "homepage": "https://huggingface.co/Babelscape/rebel-large",
+    "tags": ["relation-extraction", "seq2seq", "knowledge-graph"],
+    "languages": ["en"],
+    "architecture": "BART-large",
+    "parameters": "406M",
+    "max_tokens": 1024,
+    "usage_examples": [
+      {
+        "title": "Extract relations",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/recognize \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"Babelscape/rebel-large\", \"texts\": [\"Elon Musk founded SpaceX in 2002.\"], \"labels\": [\"founded by\"], \"task\": \"relations\"}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "encoder.onnx",

@@ -3,8 +3,24 @@
   "name": "chonky-mmbert-small-multilingual-1",
   "owner": "mirth",
   "type": "chunker",
-  "description": "",
+  "description": "Semantic chunker that splits text at natural topic boundaries. Multilingual support with mBERT backbone.",
   "source": "mirth/chonky_mmbert_small_multilingual_1",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/mirth/chonky_mmbert_small_multilingual_1",
+    "tags": ["chunking", "semantic-splitting", "multilingual"],
+    "languages": ["multilingual"],
+    "architecture": "mBERT-small",
+    "parameters": "134M",
+    "max_tokens": 512,
+    "usage_examples": [
+      {
+        "title": "Chunk text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/chunk \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"mirth/chonky_mmbert_small_multilingual_1\", \"texts\": [\"Long document text that should be split into semantic chunks...\"]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "model.onnx",

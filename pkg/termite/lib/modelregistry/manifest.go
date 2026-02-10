@@ -134,6 +134,28 @@ func (t ModelType) DirName() string {
 	}
 }
 
+// UsageExample demonstrates how to call the model via the API
+type UsageExample struct {
+	Title string `json:"title"`
+	Lang  string `json:"lang"`
+	Code  string `json:"code"`
+}
+
+// ModelCard contains structured metadata about a model's provenance,
+// architecture, and usage information
+type ModelCard struct {
+	License          string         `json:"license,omitempty"`
+	Homepage         string         `json:"homepage,omitempty"`
+	Tags             []string       `json:"tags,omitempty"`
+	Languages        []string       `json:"languages,omitempty"`
+	Architecture     string         `json:"architecture,omitempty"`
+	Parameters       string         `json:"parameters,omitempty"`
+	Dimensions       int            `json:"dimensions,omitempty"`
+	MaxTokens        int            `json:"max_tokens,omitempty"`
+	TrainingDatasets []string       `json:"training_datasets,omitempty"`
+	UsageExamples    []UsageExample `json:"usage_examples,omitempty"`
+}
+
 // ModelFile represents a single file in the model manifest
 type ModelFile struct {
 	// Name is the filename (e.g., "model.onnx", "tokenizer.json")
@@ -226,6 +248,8 @@ type ModelManifest struct {
 	// Valid values: "onnx", "xla", "go"
 	// If empty, all backends are supported (default).
 	Backends []string `json:"backends,omitempty"`
+	// Card contains structured metadata about the model (license, architecture, usage examples, etc.)
+	Card *ModelCard `json:"card,omitempty"`
 	// Provenance tracks where/when the model was obtained
 	Provenance *ModelProvenance `json:"provenance,omitempty"`
 }

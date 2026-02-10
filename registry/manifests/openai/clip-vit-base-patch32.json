@@ -3,8 +3,31 @@
   "name": "clip-vit-base-patch32",
   "owner": "openai",
   "type": "embedder",
-  "description": "",
+  "description": "Multimodal image-text embeddings for zero-shot classification and cross-modal retrieval.",
   "source": "openai/clip-vit-base-patch32",
+  "card": {
+    "license": "MIT",
+    "homepage": "https://huggingface.co/openai/clip-vit-base-patch32",
+    "tags": ["embedding", "multimodal", "image", "zero-shot"],
+    "languages": ["en"],
+    "architecture": "ViT-B/32 + GPT",
+    "parameters": "151M",
+    "dimensions": 512,
+    "max_tokens": 77,
+    "training_datasets": ["LAION-400M", "WebImageText"],
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"openai/clip-vit-base-patch32\", \"input\": [\"a photo of a cat\"]}'"
+      },
+      {
+        "title": "Embed image",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"openai/clip-vit-base-patch32\", \"input\": [{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/cat.jpg\"}}]}'"
+      }
+    ]
+  },
   "capabilities": ["image"],
   "backends": ["onnx"],
   "files": [

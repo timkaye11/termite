@@ -5,6 +5,23 @@
   "type": "embedder",
   "description": "Premium English embeddings with Matryoshka support. Top-tier MTEB scores with excellent quality-to-size ratio.",
   "source": "dunzhang/stella_en_1.5B_v5",
+  "card": {
+    "license": "MIT",
+    "homepage": "https://huggingface.co/dunzhang/stella_en_1.5B_v5",
+    "tags": ["embedding", "retrieval", "matryoshka"],
+    "languages": ["en"],
+    "architecture": "Qwen2-1.5B",
+    "parameters": "1.5B",
+    "dimensions": 1024,
+    "max_tokens": 512,
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"dunzhang/stella_en_1.5B_v5\", \"input\": [\"search query text\"]}'"
+      }
+    ]
+  },
   "files": [],
   "variants": {}
 }

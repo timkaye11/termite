@@ -2,8 +2,30 @@
   "schemaVersion": 2,
   "name": "clap-htsat-unfused",
   "type": "embedder",
-  "description": "",
+  "description": "Audio-text embeddings for zero-shot audio classification and cross-modal retrieval.",
   "source": "Xenova/clap-htsat-unfused",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/Xenova/clap-htsat-unfused",
+    "tags": ["embedding", "audio", "multimodal", "zero-shot"],
+    "languages": ["en"],
+    "architecture": "HTSAT + RoBERTa",
+    "parameters": "187M",
+    "dimensions": 512,
+    "training_datasets": ["LAION-Audio-630K"],
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"Xenova/clap-htsat-unfused\", \"input\": [\"a dog barking\"]}'"
+      },
+      {
+        "title": "Embed audio",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"Xenova/clap-htsat-unfused\", \"input\": [{\"type\": \"audio_url\", \"audio_url\": {\"url\": \"https://example.com/audio.wav\"}}]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "audio_model.onnx",

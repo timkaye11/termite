@@ -2,8 +2,34 @@
   "schemaVersion": 2,
   "name": "gliner2-base-v1",
   "type": "recognizer",
-  "description": "",
+  "description": "Zero-shot NER, relation extraction, and text classification with multi-task GLiNER2 architecture.",
   "source": "fastino/gliner2-base-v1",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/fastino/gliner2-base-v1",
+    "tags": ["ner", "zero-shot", "relation-extraction", "classification", "json-extraction"],
+    "languages": ["en"],
+    "architecture": "DeBERTa-v3-base + GLiNER2",
+    "parameters": "209M",
+    "max_tokens": 512,
+    "usage_examples": [
+      {
+        "title": "Extract entities",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/recognize \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"fastino/gliner2-base-v1\", \"texts\": [\"Steve Jobs founded Apple in Cupertino.\"], \"labels\": [\"person\", \"organization\", \"location\"]}'"
+      },
+      {
+        "title": "Extract relations",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/recognize \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"fastino/gliner2-base-v1\", \"texts\": [\"Steve Jobs founded Apple.\"], \"labels\": [\"founded by\"], \"task\": \"relations\"}'"
+      },
+      {
+        "title": "Classify text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/classify \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"fastino/gliner2-base-v1\", \"texts\": [\"Apple reported record quarterly revenue.\"], \"labels\": [\"finance\", \"technology\", \"sports\"]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "added_tokens.json",

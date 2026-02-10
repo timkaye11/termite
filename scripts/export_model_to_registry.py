@@ -1776,6 +1776,7 @@ def generate_manifest(
     capabilities: list[str] | None = None,
     backends: list[str] | None = None,
     recognizer_arch: str | None = None,
+    card: dict | None = None,
 ) -> dict:
     """Generate a registry manifest for the exported model.
 
@@ -1789,6 +1790,7 @@ def generate_manifest(
         capabilities: List of capabilities (e.g., ["labels", "zeroshot", "relations"])
         backends: List of supported backends (e.g., ["onnx"])
         recognizer_arch: For recognizers, the architecture type: "gliner", "rebel", or "ner"
+        card: Model card metadata dict (license, architecture, usage_examples, etc.)
     """
     # Dynamically discover all model files in the directory
     logger.info("Discovering model files...")
@@ -1825,6 +1827,9 @@ def generate_manifest(
 
     if variants:
         manifest["variants"] = variants
+
+    if card:
+        manifest["card"] = card
 
     return manifest
 
@@ -3132,6 +3137,13 @@ def cmd_export(args):
     else:
         logger.info("\n[2/4] Skipping model test")
 
+    # Load model card metadata if provided
+    card_data = None
+    if getattr(args, "card_file", None) is not None:
+        logger.info(f"Loading model card from {args.card_file}")
+        with open(args.card_file) as f:
+            card_data = json.load(f)
+
     # Generate manifest
     logger.info("\n[3/4] Generating registry manifest...")
     manifest = generate_manifest(
@@ -3144,6 +3156,7 @@ def cmd_export(args):
         capabilities=capabilities if capabilities else None,
         backends=args.backends if args.backends else None,
         recognizer_arch=recognizer_arch,
+        card=card_data,
     )
 
     # Save local manifest to model directory
@@ -3406,6 +3419,13 @@ Environment Variables:
             action="store_true",
             help="Trust remote code from HuggingFace (required for some models like Florence-2). "
                  "Only used for reader models.",
+        )
+        export_parser.add_argument(
+            "--card-file",
+            type=Path,
+            default=None,
+            help="Path to a JSON file containing model card metadata. "
+                 "The contents will be merged as the 'card' field in the generated manifest.",
         )
         # Store the model type for later
         export_parser.set_defaults(model_type=model_type)

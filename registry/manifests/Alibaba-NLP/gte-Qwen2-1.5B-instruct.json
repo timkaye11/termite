@@ -5,6 +5,23 @@
   "type": "embedder",
   "description": "Instruction-following embeddings with 32K context window. Best for long document retrieval and instruction-tuned tasks.",
   "source": "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+    "tags": ["embedding", "retrieval", "instruction-tuned"],
+    "languages": ["multilingual"],
+    "architecture": "Qwen2-1.5B",
+    "parameters": "1.5B",
+    "dimensions": 1536,
+    "max_tokens": 32768,
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"Alibaba-NLP/gte-Qwen2-1.5B-instruct\", \"input\": [\"search query text\"]}'"
+      }
+    ]
+  },
   "files": [],
   "variants": {}
 }

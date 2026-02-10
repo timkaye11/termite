@@ -5,6 +5,23 @@
   "type": "embedder",
   "description": "Compact multilingual embeddings optimized for edge deployment. 100+ languages, 768 dims with Matryoshka support. Community ONNX export of Google's EmbeddingGemma.",
   "source": "onnx-community/embeddinggemma-300m-ONNX",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX",
+    "tags": ["embedding", "retrieval", "multilingual", "matryoshka"],
+    "languages": ["multilingual"],
+    "architecture": "Gemma3-300M",
+    "parameters": "300M",
+    "dimensions": 768,
+    "max_tokens": 2048,
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"onnx-community/embeddinggemma-300m-ONNX\", \"input\": [\"search query text\"]}'"
+      }
+    ]
+  },
   "files": [],
   "variants": {}
 }

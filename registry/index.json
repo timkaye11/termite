@@ -5,12 +5,12 @@
       "name": "clipclap",
       "owner": "antflydb",
       "type": "embedder",
-      "description": "",
+      "description": "Unified multimodal embeddings bridging CLIP and CLAP for text, image, and audio retrieval in a shared vector space.",
       "source": "antflydb/clipclap",
       "size": 0,
       "variants": [],
       "capabilities": [
-        "multimodal",
+        "image",
         "audio"
       ]
     },
@@ -18,7 +18,7 @@
       "name": "bge-small-en-v1.5",
       "owner": "BAAI",
       "type": "embedder",
-      "description": "",
+      "description": "Compact English embeddings with strong retrieval performance. Ideal for low-latency applications.",
       "source": "BAAI/bge-small-en-v1.5",
       "size": 133987476,
       "variants": [
@@ -30,7 +30,7 @@
       "name": "rebel-large",
       "owner": "Babelscape",
       "type": "recognizer",
-      "description": "",
+      "description": "Relation extraction model that extracts triplets (subject, relation, object) from text using seq2seq generation.",
       "source": "Babelscape/rebel-large",
       "size": 3163580492,
       "variants": [],
@@ -41,7 +41,7 @@
     {
       "name": "clap-htsat-unfused",
       "type": "embedder",
-      "description": "",
+      "description": "Audio-text embeddings for zero-shot audio classification and cross-modal retrieval.",
       "source": "Xenova/clap-htsat-unfused",
       "size": 2186515085,
       "variants": [],
@@ -53,7 +53,7 @@
     {
       "name": "gliner2-base-v1",
       "type": "recognizer",
-      "description": "",
+      "description": "Zero-shot NER, relation extraction, and text classification with multi-task GLiNER2 architecture.",
       "source": "fastino/gliner2-base-v1",
       "size": 817928871,
       "variants": [],
@@ -68,7 +68,7 @@
     {
       "name": "functiongemma-270m-it",
       "type": "generator",
-      "description": "",
+      "description": "Compact instruction-tuned LLM optimized for function calling and structured output generation.",
       "source": "google/functiongemma-270m-it",
       "size": 1174265658,
       "variants": [],
@@ -77,7 +77,7 @@
     {
       "name": "flan-t5-small-squad-qg",
       "type": "rewriter",
-      "description": "",
+      "description": "Question generation model fine-tuned on SQuAD. Generates questions from context passages for data augmentation.",
       "source": "lmqg/flan-t5-small-squad-qg",
       "size": 596964700,
       "variants": [],
@@ -87,7 +87,7 @@
       "name": "chonky-mmbert-small-multilingual-1",
       "owner": "mirth",
       "type": "chunker",
-      "description": "",
+      "description": "Semantic chunker that splits text at natural topic boundaries. Multilingual support with mBERT backbone.",
       "source": "mirth/chonky_mmbert_small_multilingual_1",
       "size": 597479152,
       "variants": [
@@ -99,7 +99,7 @@
       "name": "mxbai-rerank-base-v1",
       "owner": "mixedbread-ai",
       "type": "reranker",
-      "description": "",
+      "description": "Cross-encoder reranker for improving search result relevance. Strong performance on BEIR benchmarks.",
       "source": "mixedbread-ai/mxbai-rerank-base-v1",
       "size": 747254415,
       "variants": [
@@ -110,7 +110,7 @@
     {
       "name": "nomic-embed-text-v1.5",
       "type": "embedder",
-      "description": "",
+      "description": "Long-context embeddings with Matryoshka support. Flexible dimensions (64-768) and 8K token context.",
       "source": "nomic-ai/nomic-embed-text-v1.5",
       "size": 548257185,
       "variants": [
@@ -125,7 +125,7 @@
     {
       "name": "embeddinggemma-300m-onnx",
       "type": "embedder",
-      "description": "",
+      "description": "Compact multilingual embeddings optimized for edge deployment. 100+ languages, 768 dims with Matryoshka support.",
       "source": "onnx-community/embeddinggemma-300m-ONNX",
       "size": 1269543797,
       "variants": [
@@ -140,7 +140,7 @@
       "name": "clip-vit-base-patch32",
       "owner": "openai",
       "type": "embedder",
-      "description": "",
+      "description": "Multimodal image-text embeddings for zero-shot classification and cross-modal retrieval.",
       "source": "openai/clip-vit-base-patch32",
       "size": 612032340,
       "variants": [
@@ -148,7 +148,7 @@
         "i8"
       ],
       "capabilities": [
-        "multimodal"
+        "image"
       ],
       "backends": [
         "onnx"
@@ -157,7 +157,7 @@
     {
       "name": "pegasus-paraphrase",
       "type": "rewriter",
-      "description": "",
+      "description": "PEGASUS model fine-tuned for paraphrasing. Generates diverse rephrasings of input text.",
       "source": "tuner007/pegasus_paraphrase",
       "size": 4800242936,
       "variants": [],

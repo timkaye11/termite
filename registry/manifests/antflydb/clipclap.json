@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "name": "clipclap",
+  "owner": "antflydb",
+  "type": "embedder",
+  "description": "Unified multimodal embeddings bridging CLIP and CLAP for text, image, and audio retrieval in a shared vector space.",
+  "source": "antflydb/clipclap",
+  "card": {
+    "license": "MIT",
+    "homepage": "https://huggingface.co/antflydb/clipclap",
+    "tags": ["embedding", "multimodal", "image", "audio", "zero-shot"],
+    "languages": ["en"],
+    "architecture": "CLIP + CLAP bridge",
+    "parameters": "151M+187M",
+    "dimensions": 512,
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"antflydb/clipclap\", \"input\": [\"a photo of a cat\"]}'"
+      },
+      {
+        "title": "Embed image",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"antflydb/clipclap\", \"input\": [{\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/cat.jpg\"}}]}'"
+      }
+    ]
+  },
+  "capabilities": ["image", "audio"],
+  "backends": ["onnx"],
+  "files": []
+}

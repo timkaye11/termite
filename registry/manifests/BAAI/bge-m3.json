@@ -5,6 +5,24 @@
   "type": "embedder",
   "description": "Multilingual embeddings supporting 100+ languages with 8K context. State-of-the-art for cross-lingual retrieval tasks.",
   "source": "BAAI/bge-m3",
+  "card": {
+    "license": "MIT",
+    "homepage": "https://huggingface.co/BAAI/bge-m3",
+    "tags": ["embedding", "retrieval", "multilingual"],
+    "languages": ["multilingual"],
+    "architecture": "XLM-RoBERTa",
+    "parameters": "568M",
+    "dimensions": 1024,
+    "max_tokens": 8192,
+    "training_datasets": ["retromae", "c-mteb", "miracl"],
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"BAAI/bge-m3\", \"input\": [\"search query text\"]}'"
+      }
+    ]
+  },
   "files": [],
   "variants": {}
 }

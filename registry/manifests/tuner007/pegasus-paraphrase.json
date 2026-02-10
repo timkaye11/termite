@@ -2,8 +2,24 @@
   "schemaVersion": 2,
   "name": "pegasus-paraphrase",
   "type": "rewriter",
-  "description": "",
+  "description": "PEGASUS model fine-tuned for paraphrasing. Generates diverse rephrasings of input text.",
   "source": "tuner007/pegasus_paraphrase",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/tuner007/pegasus_paraphrase",
+    "tags": ["paraphrasing", "seq2seq", "text-generation"],
+    "languages": ["en"],
+    "architecture": "PEGASUS-large",
+    "parameters": "571M",
+    "max_tokens": 1024,
+    "usage_examples": [
+      {
+        "title": "Paraphrase text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/rewrite \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"tuner007/pegasus_paraphrase\", \"texts\": [\"The quick brown fox jumps over the lazy dog.\"]}'"
+      }
+    ]
+  },
   "files": [
     {
       "name": "encoder.onnx",

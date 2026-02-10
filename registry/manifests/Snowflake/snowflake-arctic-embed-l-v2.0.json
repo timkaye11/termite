@@ -5,6 +5,23 @@
   "type": "embedder",
   "description": "Retrieval-optimized embeddings with Matryoshka support. 1024 dimensions with excellent retrieval benchmarks.",
   "source": "Snowflake/snowflake-arctic-embed-l-v2.0",
+  "card": {
+    "license": "Apache-2.0",
+    "homepage": "https://huggingface.co/Snowflake/snowflake-arctic-embed-l-v2.0",
+    "tags": ["embedding", "retrieval", "matryoshka"],
+    "languages": ["en"],
+    "architecture": "XLM-RoBERTa-large",
+    "parameters": "568M",
+    "dimensions": 1024,
+    "max_tokens": 512,
+    "usage_examples": [
+      {
+        "title": "Embed text",
+        "lang": "bash",
+        "code": "curl -X POST http://localhost:8082/embed \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"model\": \"Snowflake/snowflake-arctic-embed-l-v2.0\", \"input\": [\"search query text\"]}'"
+      }
+    ]
+  },
   "files": [],
   "variants": {}
 }
